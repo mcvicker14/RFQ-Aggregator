@@ -28,7 +28,7 @@ export function SampleDataBadge({ className }: { className?: string }) {
   );
 }
 
-const SET_ASIDE_LABELS: Record<string, string> = {
+export const SET_ASIDE_LABELS: Record<string, string> = {
   unrestricted: "Unrestricted",
   sdvosb: "SDVOSB Set-Aside",
   small_business: "Small Business Set-Aside",
@@ -39,6 +39,10 @@ const SET_ASIDE_LABELS: Record<string, string> = {
   other: "Other Set-Aside",
 };
 
+export function setAsideLabel(value: string): string {
+  return SET_ASIDE_LABELS[value] ?? titleCase(value);
+}
+
 export function SetAsideBadge({ value }: { value: string }) {
   const variant = value === "sdvosb" ? "accent" : value === "unrestricted" ? "muted" : "secondary";
   return <Badge variant={variant}>{SET_ASIDE_LABELS[value] ?? titleCase(value)}</Badge>;
@@ -46,6 +50,25 @@ export function SetAsideBadge({ value }: { value: string }) {
 
 export function MaturityBadge({ value }: { value: string }) {
   return <Badge variant="outline">{titleCase(value)}</Badge>;
+}
+
+export const CONTRACT_TYPE_LABELS: Record<string, string> = {
+  ae_brooks_act: "A/E (Brooks Act)",
+  idiq: "IDIQ",
+  matoc: "MATOC",
+  satoc: "SATOC",
+  task_order: "Task Order",
+  design_build: "Design-Build",
+  construction: "Construction",
+  other: "Other",
+};
+
+export function contractTypeLabel(value: string): string {
+  return CONTRACT_TYPE_LABELS[value] ?? titleCase(value);
+}
+
+export function ContractTypeBadge({ value }: { value: string }) {
+  return <Badge variant="outline">{contractTypeLabel(value)}</Badge>;
 }
 
 export function PriorityBadge({ value }: { value: string }) {

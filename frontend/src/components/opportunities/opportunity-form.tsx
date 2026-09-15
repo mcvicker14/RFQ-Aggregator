@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { contractTypeLabel, setAsideLabel } from "@/components/domain/badges";
 import { toDatetimeLocal } from "@/lib/utils";
 import type { Agency, Company, Opportunity } from "@/types";
 
@@ -189,7 +190,7 @@ export function OpportunityForm({
           <Select value={values.set_aside} onValueChange={(v) => set("set_aside", v)}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
-              {SET_ASIDES.map((s) => <SelectItem key={s} value={s}>{s.replace(/_/g, " ")}</SelectItem>)}
+              {SET_ASIDES.map((s) => <SelectItem key={s} value={s}>{setAsideLabel(s)}</SelectItem>)}
             </SelectContent>
           </Select>
         </Field>
@@ -197,7 +198,7 @@ export function OpportunityForm({
           <Select value={values.contract_type} onValueChange={(v) => set("contract_type", v)}>
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
-              {CONTRACT_TYPES.map((s) => <SelectItem key={s} value={s}>{s.replace(/_/g, " ")}</SelectItem>)}
+              {CONTRACT_TYPES.map((s) => <SelectItem key={s} value={s}>{contractTypeLabel(s)}</SelectItem>)}
             </SelectContent>
           </Select>
         </Field>

@@ -118,7 +118,9 @@ def build_dashboard_summary(db: Session) -> DashboardSummary:
         by_stage[stage_name][1] += 1
 
         agency = agencies.get(opp.agency_id)
-        agency_label = agency.name if agency else "Unassigned"
+        # short_name (e.g. "USACE") keeps chart Y-axis labels from wrapping/colliding —
+        # full name is still shown elsewhere (agency profile, opportunity detail).
+        agency_label = (agency.short_name or agency.name) if agency else "Unassigned"
         by_agency[agency_label][0] += fee
         by_agency[agency_label][1] += 1
 

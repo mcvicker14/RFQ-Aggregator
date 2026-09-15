@@ -6,6 +6,10 @@ import { colorForLabel, CHART_AXIS, CHART_GRID } from "@/lib/chart-colors";
 import { formatCurrency } from "@/lib/utils";
 import type { ChartBucket } from "@/types";
 
+function truncateLabel(label: string): string {
+  return label.length > 22 ? `${label.slice(0, 21)}…` : label;
+}
+
 function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: { value: number; payload: ChartBucket }[]; label?: string }) {
   if (!active || !payload?.length) return null;
   const bucket = payload[0].payload;
@@ -47,6 +51,7 @@ export function HorizontalBarChartCard({
               dataKey="label"
               width={140}
               tick={{ fontSize: 11, fill: CHART_AXIS }}
+              tickFormatter={truncateLabel}
               axisLine={false}
               tickLine={false}
             />

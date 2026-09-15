@@ -45,6 +45,7 @@ export const dashboardApi = {
 
 // --- Opportunities ----------------------------------------------------------------
 export interface OpportunityListParams {
+  [key: string]: string | number | undefined;
   q?: string;
   stage_id?: string;
   agency_id?: string;

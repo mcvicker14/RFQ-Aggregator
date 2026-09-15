@@ -1,0 +1,53 @@
+# Local/self-hosted deployment. Not executed in the sandbox this project was built
+# in (no Docker daemon available there) — the underlying services were validated by
+# running Postgres, the backend, and the frontend directly instead. Review before
+# relying on this for a first deployment. See docs/ARCHITECTURE.md §7.
+#
+# Quick start: copy backend/.env.example to backend/.env and fill in real values,
+# then: docker compose up --build
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: principal_oi
+      POSTGRES_USER: principal_oi_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in a .env file next to this compose file}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U principal_oi_app -d principal_oi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://principal_oi_app:${POSTGRES_PASSWORD}@db:5432/principal_oi
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:8000
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:
+  uploads:

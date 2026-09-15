@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { OpportunityForm } from "@/components/opportunities/opportunity-form";
 import { opportunitiesApi } from "@/lib/api/resources";
+import { contractTypeLabel } from "@/components/domain/badges";
 import { formatCurrency, formatDateTime, titleCase } from "@/lib/utils";
 import type { Opportunity } from "@/types";
 
@@ -36,7 +37,7 @@ export function OverviewTab({ opportunity, onUpdated }: { opportunity: Opportuni
           <Fact label="Agency" value={opportunity.agency?.name} />
           <Fact label="NAICS" value={opportunity.naics_code} />
           <Fact label="PSC" value={opportunity.psc_code} />
-          <Fact label="Contract Type" value={titleCase(opportunity.contract_type)} />
+          <Fact label="Contract Type" value={contractTypeLabel(opportunity.contract_type)} />
           <Fact label="Est. Value (Low)" value={formatCurrency(opportunity.estimated_value_low)} />
           <Fact label="Est. Value (High)" value={formatCurrency(opportunity.estimated_value_high)} />
           <Fact label="Est. Principal Fee" value={formatCurrency(opportunity.estimated_fee)} />

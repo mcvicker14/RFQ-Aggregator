@@ -19,6 +19,7 @@ node_modules/
 out/
 frontend/.next/
 frontend/node_modules/
+*.tsbuildinfo
 
 # Uploaded documents (local dev storage — not source)
 backend/uploads/*

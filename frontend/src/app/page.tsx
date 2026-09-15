@@ -23,7 +23,7 @@ import { dashboardApi } from "@/lib/api/resources";
 import { KpiCard } from "@/components/dashboard/kpi-card";
 import { HorizontalBarChartCard, TrendChartCard } from "@/components/dashboard/charts";
 import { OpportunityTable } from "@/components/opportunities/opportunity-table";
-import { TaskStatusBadge, PriorityBadge } from "@/components/domain/badges";
+import { TaskStatusBadge, PriorityBadge, contractTypeLabel } from "@/components/domain/badges";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState, ErrorState, EmptyState } from "@/components/ui/states";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
@@ -89,6 +89,14 @@ export default function DashboardPage() {
         <HorizontalBarChartCard title="Pipeline by State" data={data.pipeline_by_state} />
         <HorizontalBarChartCard title="Pipeline by Source" data={data.pipeline_by_source} />
         <HorizontalBarChartCard title="Pipeline by NAICS Code" data={data.pipeline_by_naics} />
+        <HorizontalBarChartCard
+          title="Pipeline by Contract Type"
+          data={data.pipeline_by_contract_type.map((b) => ({ ...b, label: contractTypeLabel(b.label) }))}
+        />
+        <HorizontalBarChartCard
+          title="Pipeline by Pursuit Score Band"
+          data={data.pipeline_by_score_band.map((b) => ({ ...b, label: b.label === "unscored" ? "Not Scored" : `${b.label.charAt(0).toUpperCase()}${b.label.slice(1)} Priority` }))}
+        />
       </div>
 
       <Card>
