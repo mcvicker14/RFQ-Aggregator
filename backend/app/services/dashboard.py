@@ -1,0 +1,217 @@
+"""Executive dashboard aggregation, spec §1. Aggregates in Python over the active
+opportunity set rather than SQL GROUP BY — simpler to read and entirely adequate at
+this application's current data volume; if/when the pipeline grows into the
+thousands, these queries are the place to push the aggregation into SQL.
+"""
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models.agency import Agency
+from app.models.enums import MaturityStage, OpportunityStatus, TaskStatus
+from app.models.gonogo import GoNoGoReview
+from app.models.opportunity import Opportunity
+from app.models.pipeline import PipelineStage
+from app.models.scoring import OpportunityScore
+from app.models.task import Task
+from app.schemas.dashboard import ChartBucket, DashboardSummary, KpiCards
+from app.schemas.opportunity import OpportunityListItem
+from app.schemas.task import TaskRead
+
+EARLY_STAGES = {
+    MaturityStage.RUMORED_CONCEPTUAL, MaturityStage.FUNDING_IDENTIFIED, MaturityStage.PLANNING,
+    MaturityStage.PROCUREMENT_FORECAST, MaturityStage.SOURCES_SOUGHT_RFI, MaturityStage.SOLICITATION_EXPECTED,
+}
+
+
+def _to_buckets(agg: dict[str, tuple[float, int]]) -> list[ChartBucket]:
+    return [
+        ChartBucket(label=label, value=value, count=count)
+        for label, (value, count) in sorted(agg.items(), key=lambda kv: kv[1][0], reverse=True)
+    ]
+
+
+def _opportunity_to_list_item(opp: Opportunity, agency: Agency | None, score: OpportunityScore | None) -> OpportunityListItem:
+    return OpportunityListItem(
+        id=opp.id, title=opp.title, solicitation_number=opp.solicitation_number,
+        location_state=opp.location_state, set_aside=opp.set_aside, contract_type=opp.contract_type,
+        estimated_value_high=opp.estimated_value_high, estimated_fee=opp.estimated_fee,
+        proposal_due_at=opp.proposal_due_at, pipeline_stage_id=opp.pipeline_stage_id,
+        maturity_stage=opp.maturity_stage, status=opp.status, is_sdvosb_setaside=opp.is_sdvosb_setaside,
+        is_sample_data=opp.is_sample_data, agency=agency, current_score=score.score if score else None,
+        current_score_band=score.band if score else None,
+    )
+
+
+def build_dashboard_summary(db: Session) -> DashboardSummary:
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
+    thirty_days = now + timedelta(days=30)
+
+    opportunities = db.execute(select(Opportunity).where(Opportunity.status == OpportunityStatus.ACTIVE)).scalars().all()
+    stages = {s.id: s for s in db.execute(select(PipelineStage)).scalars().all()}
+    agencies = {a.id: a for a in db.execute(select(Agency)).scalars().all()}
+
+    scores_by_opp: dict = {}
+    for score in db.execute(select(OpportunityScore)).scalars().all():
+        existing = scores_by_opp.get(score.opportunity_id)
+        if existing is None or score.computed_at > existing.computed_at:
+            scores_by_opp[score.opportunity_id] = score
+
+    reviews_by_opp = {r.opportunity_id: r for r in db.execute(select(GoNoGoReview)).scalars().all()}
+
+    total_value = total_fee = 0.0
+    discovered_this_week = due_30 = awaiting_gonogo = 0
+    active_proposals = interviews_pending = awards_pending = wins = losses = 0
+    sdvosb_count = limited_competition_count = recompete_count = early_stage_count = 0
+
+    by_stage: dict[str, list] = defaultdict(lambda: [0.0, 0])
+    by_agency: dict[str, list] = defaultdict(lambda: [0.0, 0])
+    by_state: dict[str, list] = defaultdict(lambda: [0.0, 0])
+    by_source: dict[str, list] = defaultdict(lambda: [0.0, 0])
+    by_contract_type: dict[str, list] = defaultdict(lambda: [0.0, 0])
+    by_naics: dict[str, list] = defaultdict(lambda: [0.0, 0])
+    by_score_band: dict[str, list] = defaultdict(lambda: [0.0, 0])
+    by_month: dict[str, list] = defaultdict(lambda: [0.0, 0])
+
+    upcoming_deadlines: list[Opportunity] = []
+
+    for opp in opportunities:
+        fee = float(opp.estimated_fee or 0)
+        value = float(opp.estimated_value_high or opp.estimated_value_low or 0)
+        total_value += value
+        total_fee += fee
+
+        if opp.created_at >= week_ago:
+            discovered_this_week += 1
+        if opp.proposal_due_at and now <= opp.proposal_due_at <= thirty_days:
+            due_30 += 1
+            upcoming_deadlines.append(opp)
+        if opp.is_sdvosb_setaside:
+            sdvosb_count += 1
+        if opp.set_aside.value != "unrestricted":
+            limited_competition_count += 1
+        if opp.incumbent_company_id is not None:
+            recompete_count += 1
+        if opp.maturity_stage in EARLY_STAGES:
+            early_stage_count += 1
+
+        stage = stages.get(opp.pipeline_stage_id)
+        stage_name = stage.name if stage else "Unassigned"
+        review = reviews_by_opp.get(opp.id)
+        if stage_name == "Go/No-Go" or (review and review.decision is None):
+            awaiting_gonogo += 1
+        if stage_name in ("Proposal Development", "Submitted"):
+            active_proposals += 1
+        if stage_name == "Interview":
+            interviews_pending += 1
+        if stage_name == "Award Pending":
+            awards_pending += 1
+        if stage and stage.is_closed_won:
+            wins += 1
+        if stage_name == "Lost":
+            losses += 1
+
+        by_stage[stage_name][0] += fee
+        by_stage[stage_name][1] += 1
+
+        agency = agencies.get(opp.agency_id)
+        agency_label = agency.name if agency else "Unassigned"
+        by_agency[agency_label][0] += fee
+        by_agency[agency_label][1] += 1
+
+        state_label = opp.location_state or "Unknown"
+        by_state[state_label][0] += fee
+        by_state[state_label][1] += 1
+
+        by_source[opp.opportunity_source_label][0] += fee
+        by_source[opp.opportunity_source_label][1] += 1
+
+        by_contract_type[opp.contract_type.value][0] += fee
+        by_contract_type[opp.contract_type.value][1] += 1
+
+        naics_label = opp.naics_code or "Unclassified"
+        by_naics[naics_label][0] += fee
+        by_naics[naics_label][1] += 1
+
+        score = scores_by_opp.get(opp.id)
+        band_label = score.band if score else "unscored"
+        by_score_band[band_label][0] += fee
+        by_score_band[band_label][1] += 1
+
+        month_label = opp.created_at.strftime("%Y-%m")
+        by_month[month_label][0] += fee
+        by_month[month_label][1] += 1
+
+    win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else None
+
+    kpis = KpiCards(
+        total_active_opportunities=len(opportunities),
+        total_estimated_contract_value=total_value,
+        total_estimated_fee=total_fee,
+        discovered_this_week=discovered_this_week,
+        due_within_30_days=due_30,
+        awaiting_go_no_go=awaiting_gonogo,
+        active_proposals=active_proposals,
+        interviews_pending=interviews_pending,
+        awards_pending=awards_pending,
+        wins=wins,
+        losses=losses,
+        win_rate_pct=win_rate,
+        sdvosb_setaside_count=sdvosb_count,
+        sole_source_or_limited_competition_count=limited_competition_count,
+        recompete_count=recompete_count,
+        early_stage_count=early_stage_count,
+    )
+
+    ranked = sorted(
+        opportunities,
+        key=lambda o: (
+            -(scores_by_opp[o.id].score if o.id in scores_by_opp else 0),
+            o.proposal_due_at or datetime.max.replace(tzinfo=timezone.utc),
+        ),
+    )
+    highest_priority = ranked[:10]
+
+    upcoming_deadlines.sort(key=lambda o: o.proposal_due_at)
+
+    tasks = db.execute(
+        select(Task).where(Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]))
+    ).scalars().all()
+    today = date.today()
+    attention_tasks = [t for t in tasks if t.due_date and t.due_date <= today]
+    attention_tasks.sort(key=lambda t: t.due_date)
+
+    opp_titles = {o.id: o.title for o in opportunities}
+
+    return DashboardSummary(
+        kpis=kpis,
+        pipeline_by_stage=_to_buckets(by_stage),
+        pipeline_by_agency=_to_buckets(by_agency),
+        pipeline_by_state=_to_buckets(by_state),
+        pipeline_by_source=_to_buckets(by_source),
+        pipeline_by_contract_type=_to_buckets(by_contract_type),
+        pipeline_by_naics=_to_buckets(by_naics),
+        pipeline_by_score_band=_to_buckets(by_score_band),
+        pipeline_value_over_time=[
+            ChartBucket(label=label, value=v, count=c) for label, (v, c) in sorted(by_month.items())
+        ],
+        upcoming_deadlines=[
+            _opportunity_to_list_item(o, agencies.get(o.agency_id), scores_by_opp.get(o.id))
+            for o in upcoming_deadlines[:10]
+        ],
+        highest_priority_opportunities=[
+            _opportunity_to_list_item(o, agencies.get(o.agency_id), scores_by_opp.get(o.id))
+            for o in highest_priority
+        ],
+        attention_today_tasks=[
+            TaskRead(
+                id=t.id, opportunity_id=t.opportunity_id, opportunity_title=opp_titles.get(t.opportunity_id),
+                title=t.title, notes=t.notes, owner_id=t.owner_id, due_date=t.due_date,
+                priority=t.priority, status=t.status, created_by_id=t.created_by_id,
+            )
+            for t in attention_tasks[:20]
+        ],
+    )
