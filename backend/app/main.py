@@ -15,6 +15,7 @@ from app.api.routes import (
     forecast,
     gonogo,
     ingestion,
+    intelligence_sources,
     opportunities,
     pipeline_stages,
     reference,
@@ -68,6 +69,7 @@ for router in (
     reference.router,
     alerts.router,
     ingestion.router,
+    intelligence_sources.router,
     settings_routes.router,
     winloss.router,
 ):
