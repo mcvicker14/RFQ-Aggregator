@@ -35,10 +35,23 @@ function resolveBackendUrl(): string {
 // Headers that must not be forwarded as-is: they describe *this* hop (browser <->
 // Next.js server) and would be wrong, or fetch() recomputes them itself.
 const SKIP_REQUEST_HEADERS = new Set(["host", "connection", "content-length", "transfer-encoding", "keep-alive"]);
-// content-encoding/transfer-encoding: fetch() already transparently decompresses the
-// backend's response, so forwarding these would tell the browser to decompress
+// content-encoding: fetch() already transparently decompresses the backend's
+// response, so forwarding this would tell the browser to decompress
 // already-decompressed bytes and corrupt the response.
-const SKIP_RESPONSE_HEADERS = new Set(["content-encoding", "transfer-encoding", "connection", "keep-alive"]);
+// content-length: fetch() reports the ORIGINAL (possibly compressed) length from
+// the backend, which no longer matches the now-decompressed body length. Forwarding
+// it verbatim causes the browser to read exactly that many bytes and truncate the
+// rest — reproduced directly: pointed this proxy at a backend that gzip-compresses
+// its response (as a production TLS-terminating edge/load balancer, e.g. Render's,
+// commonly does even when the origin app itself sends plain JSON — the local FastAPI
+// dev server doesn't compress, which is why this didn't show up in an earlier
+// loopback-only reproduction), and the JSON body arrived truncated mid-string at
+// exactly the compressed byte count, which is indistinguishable from the browser's
+// perspective from a network error — hence a plain (non-ApiClientError) exception
+// out of response.json(), caught by the login page's generic "Unable to sign in"
+// fallback. Omitting content-length here lets Node's own HTTP stack compute the
+// correct value (or use chunked transfer-encoding) for the bytes actually sent.
+const SKIP_RESPONSE_HEADERS = new Set(["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive"]);
 
 async function proxy(request: NextRequest, path: string[]): Promise<Response> {
   const backendUrl = resolveBackendUrl();
