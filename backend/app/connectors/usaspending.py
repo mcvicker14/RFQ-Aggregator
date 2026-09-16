@@ -9,10 +9,21 @@ https://github.com/fedspendingtransparency/usaspending-api/blob/master/usaspendi
 and .../search_filters.md confirm the exact request/response field names below,
 including that NAICS and Description *are* populated for contract-type awards (an
 earlier, less-informed assumption in this project's planning notes said otherwise —
-corrected here against the real contract doc rather than left unverified). As with
-SAM.gov, this has not been exercised against a live response — verify `raw_metadata`
-on the first real sync and adjust `_to_raw_intelligence_item()` if anything drifted
-since this doc was fetched.
+corrected here against the real contract doc rather than left unverified).
+
+**Production incident, since fixed**: a live sync fetched 500 real awards, and all 500
+failed at persistence with `psycopg.ProgrammingError: cannot adapt type 'dict'`.
+Reproduced directly against the real schema: "Awarding Agency" (and, per the same
+underlying API pattern, plausibly "Awarding Sub Agency" and "Recipient Name" too) comes
+back from the live API as a nested object (its documentation mentions an associated
+`agency_slug` field), not the flat string the original field-name-only contract read
+implied — this connector was passing that object straight into `agency_name`, a
+VARCHAR column, with no scalar extraction. `_extract_name()` below fixes this by
+pulling the human-readable name out of either shape. `app/services/intelligence_sync.py`
+also gained a shared, generic version of this check for every other connector — see
+its `_validate_connector_fields()` — so the next such mismatch fails with an immediate,
+specific error instead of a cryptic DBAPI one. Verify `raw_metadata` on the next real
+sync and extend `_extract_name()`'s key list if the real shape differs further.
 """
 import logging
 from datetime import date, datetime, timezone
@@ -45,14 +56,36 @@ RESPONSE_FIELDS = [
 ]
 
 
-def _parse_date(value: str | None) -> datetime | None:
-    if not value:
+def _parse_date(value) -> datetime | None:
+    if not value or not isinstance(value, str):
         return None
     try:
         return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
         logger.warning("USAspending connector: could not parse date value %r", value)
         return None
+
+
+def _extract_name(value) -> str | None:
+    """Some USAspending fields (confirmed for Awarding Agency; plausibly Awarding Sub
+    Agency and Recipient Name too, per the same API pattern) return a nested object
+    rather than a flat string. Extract the human-readable name either way."""
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value.get("name") or value.get("agency_name") or value.get("recipient_name")
+    return str(value)
+
+
+def _scalar_str(value) -> str | None:
+    """Coerce a plain scalar (e.g. a number, if a field is number-typed as some are
+    documented to be) to str. Leaves dict/list untouched rather than guessing at a
+    shape this connector has no evidence for — intelligence_sync.py's shared
+    _validate_connector_fields() will catch and clearly report those instead of this
+    connector silently mangling data it doesn't understand."""
+    if value is None or isinstance(value, (str, dict, list)):
+        return value
+    return str(value)
 
 
 class USAspendingConnector(IntelligenceConnector):
@@ -128,18 +161,21 @@ class USAspendingConnector(IntelligenceConnector):
         generated_id = item.get("generated_internal_id")
         source_url = f"https://www.usaspending.gov/award/{generated_id}" if generated_id else None
 
+        description = _scalar_str(item.get("Description"))
+        award_id = _scalar_str(item.get("Award ID"))
+
         fields = {
-            "title": item.get("Description") or item.get("Award ID") or "(untitled USAspending award)",
-            "description": item.get("Description"),
-            "agency_name": item.get("Awarding Agency"),
-            "location_city": item.get("Place of Performance City Code"),
-            "location_state": item.get("Place of Performance State Code"),
-            "naics_code": item.get("NAICS"),
-            "psc_code": item.get("PSC"),
+            "title": description or award_id or "(untitled USAspending award)",
+            "description": description,
+            "agency_name": _extract_name(item.get("Awarding Agency")),
+            "location_city": _scalar_str(item.get("Place of Performance City Code")),
+            "location_state": _scalar_str(item.get("Place of Performance State Code")),
+            "naics_code": _scalar_str(item.get("NAICS")),
+            "psc_code": _scalar_str(item.get("PSC")),
             "estimated_value_high": item.get("Award Amount"),
             "posted_at": _parse_date(item.get("Period of Performance Start Date")),
-            "awardee_name": item.get("Recipient Name"),
-            "contract_number": item.get("Award ID"),
+            "awardee_name": _extract_name(item.get("Recipient Name")),
+            "contract_number": award_id,
             "is_prime_award": True,
         }
 

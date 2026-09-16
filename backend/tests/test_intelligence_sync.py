@@ -15,7 +15,7 @@ from app.models.enums import (
 )
 from app.models.intelligence import IntelligenceItem, IntelligenceSource, IntelligenceSyncRun
 from app.models.opportunity import Opportunity
-from app.services.intelligence_sync import SyncAlreadyRunningError, run_sync
+from app.services.intelligence_sync import SyncAlreadyRunningError, _validate_connector_fields, run_sync
 
 NOW = datetime.now(timezone.utc)
 
@@ -202,3 +202,50 @@ def test_unregistered_connector_key_raises_value_error(db):
 
     with pytest.raises(ValueError):
         run_sync(db, source, SyncTriggeredBy.MANUAL)
+
+
+# --- Shared dict/list-into-non-JSONB-column defense --------------------------------
+#
+# Production once hit psycopg.ProgrammingError: cannot adapt type 'dict' because a
+# connector (USAspending) handed a nested object straight through to a VARCHAR
+# column. The USAspending-specific fix lives in app/connectors/usaspending.py, but
+# this defense in _upsert_intelligence_item protects every connector — current and
+# future — from the same failure mode. These tests use a generic FakeConnector, not
+# USAspending, to prove that.
+
+def test_validate_connector_fields_raises_specific_error_for_dict_in_non_jsonb_column():
+    with pytest.raises(ValueError, match="agency_name"):
+        _validate_connector_fields("Test Source", {"agency_name": {"name": "Department of Defense"}})
+
+
+def test_validate_connector_fields_allows_dict_in_a_real_jsonb_column():
+    _validate_connector_fields("Test Source", {"raw_metadata": {"anything": "goes"}})  # must not raise
+
+
+def test_validate_connector_fields_allows_plain_scalars():
+    _validate_connector_fields(
+        "Test Source", {"agency_name": "Department of Defense", "estimated_value_high": 100.0, "posted_at": None}
+    )  # must not raise
+
+
+def test_bad_connector_field_type_is_skipped_not_a_raw_db_crash(db, fake_connector):
+    """The end-to-end version of the two tests above: run_sync must never surface a
+    connector's dict-into-VARCHAR mistake as an uncaught DBAPI error — it's caught and
+    isolated exactly like any other single-item mapping failure (same shape as
+    test_one_bad_item_is_skipped_without_failing_the_rest above), so one bad item never
+    takes down an entire sync."""
+    source = _source(db)
+    fake_connector.items = [
+        _raw_item("GOOD-1"),
+        _raw_item("BAD-1", agency_name={"name": "Department of Defense", "agency_slug": "dod"}),
+        _raw_item("GOOD-2"),
+    ]
+
+    run = run_sync(db, source, SyncTriggeredBy.MANUAL)  # must not raise
+
+    assert run.status == SyncRunStatus.PARTIAL_FAILURE
+    assert run.items_created == 2
+    assert run.items_errored == 1
+    assert db.query(IntelligenceItem).filter_by(external_id="GOOD-1").count() == 1
+    assert db.query(IntelligenceItem).filter_by(external_id="GOOD-2").count() == 1
+    assert db.query(IntelligenceItem).filter_by(external_id="BAD-1").count() == 0

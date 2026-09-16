@@ -13,7 +13,9 @@ interface it was built for) is retired once SAM.gov migrates onto this pipeline.
 import logging
 from datetime import date, datetime, timedelta, timezone
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
 from app.connectors.registry import get_intelligence_connector
@@ -167,7 +169,38 @@ def promote_intelligence_item(db: Session, item: IntelligenceItem) -> Opportunit
     return opp
 
 
+_INTELLIGENCE_ITEM_COLUMNS = {c.key: c for c in sa_inspect(IntelligenceItem).columns}
+
+
+def _validate_connector_fields(source_name: str, fields: dict) -> None:
+    """Defends every connector, not just one, against the failure mode that produced
+    `psycopg.ProgrammingError: cannot adapt type 'dict'` in production: a connector
+    passing a structured value (a nested object from the source API) straight through
+    into a column that isn't JSONB. Left unchecked, that only surfaces as a cryptic
+    low-level DBAPI error at db.flush() — this turns it into an immediate, specific
+    error naming the connector, the field, and the value, raised before it ever
+    reaches the database. A connector fixing its own mapping (extracting a scalar, or
+    routing genuinely structured data into raw_metadata) is always the real fix;
+    this is the safety net for the next connector that gets it wrong. See
+    docs/PHASE2_ARCHITECTURE.md §6/§13.
+    """
+    for key, value in fields.items():
+        if not isinstance(value, (dict, list)):
+            continue
+        column = _INTELLIGENCE_ITEM_COLUMNS.get(key)
+        if column is None or isinstance(column.type, JSONB):
+            continue  # unknown key (ORM will raise its own clear error) or a real JSON column
+        raise ValueError(
+            f"{source_name} connector produced a {type(value).__name__} for field '{key}', but "
+            f"IntelligenceItem.{key} is a {type(column.type).__name__} column, not JSONB. "
+            f"The connector's field mapping needs to extract a scalar (e.g. value.get('name')) "
+            f"instead of passing the raw object through. Value: {value!r}"
+        )
+
+
 def _upsert_intelligence_item(db: Session, source: IntelligenceSource, raw) -> tuple[IntelligenceItem, bool]:
+    _validate_connector_fields(source.name, raw.fields)
+
     existing = db.execute(
         select(IntelligenceItem).where(
             IntelligenceItem.intelligence_source_id == source.id,

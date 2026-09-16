@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { RefreshCcw, PlayCircle } from "lucide-react";
+import { RefreshCcw, PlayCircle, History } from "lucide-react";
 import { intelligenceApi } from "@/lib/api/resources";
 import { useAuth } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -10,9 +10,10 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { LoadingState, ErrorState } from "@/components/ui/states";
 import { titleCase } from "@/lib/utils";
-import type { IntelligenceSource, JurisdictionLevel, SourceHealthStatus } from "@/types";
+import type { IntelligenceSource, IntelligenceSyncRun, JurisdictionLevel, SourceHealthStatus, SyncRunStatus } from "@/types";
 
 const HEALTH_BADGE: Record<SourceHealthStatus, { variant: "success" | "warning" | "destructive" | "muted" | "outline"; label: string }> = {
   healthy: { variant: "success", label: "Healthy" },
@@ -21,6 +22,13 @@ const HEALTH_BADGE: Record<SourceHealthStatus, { variant: "success" | "warning" 
   needs_configuration: { variant: "warning", label: "Needs Configuration" },
   manual_only: { variant: "outline", label: "Manual Only" },
   never_run: { variant: "muted", label: "Never Run" },
+};
+
+const SYNC_RUN_STATUS_BADGE: Record<SyncRunStatus, { variant: "success" | "warning" | "destructive" | "muted" | "outline"; label: string }> = {
+  running: { variant: "outline", label: "Running" },
+  success: { variant: "success", label: "Success" },
+  partial_failure: { variant: "warning", label: "Partial Failure" },
+  failure: { variant: "destructive", label: "Failure" },
 };
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -49,6 +57,10 @@ export default function IntelligenceSourcesPage() {
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncAllMessage, setSyncAllMessage] = useState<string | null>(null);
+
+  const [historySource, setHistorySource] = useState<IntelligenceSource | null>(null);
+  const [syncRuns, setSyncRuns] = useState<IntelligenceSyncRun[] | null>(null);
+  const [syncRunsError, setSyncRunsError] = useState<string | null>(null);
 
   function load() {
     setError(null);
@@ -88,6 +100,16 @@ export default function IntelligenceSourcesPage() {
   async function toggleEnabled(source: IntelligenceSource) {
     await intelligenceApi.updateSource(source.id, { is_enabled: !source.is_enabled });
     load();
+  }
+
+  function openHistory(source: IntelligenceSource) {
+    setHistorySource(source);
+    setSyncRuns(null);
+    setSyncRunsError(null);
+    intelligenceApi
+      .syncRuns(source.id, 20)
+      .then(setSyncRuns)
+      .catch((e) => setSyncRunsError(e instanceof Error ? e.message : "Failed to load sync history"));
   }
 
   const filtered = useMemo(() => {
@@ -163,9 +185,13 @@ export default function IntelligenceSourcesPage() {
                     <div className="font-medium text-foreground">{s.name}</div>
                     <div className="text-xs text-muted-foreground">{s.organization ?? "—"}</div>
                     {s.last_error && (
-                      <div className="mt-0.5 max-w-xs truncate text-xs text-destructive" title={s.last_error}>
+                      <button
+                        onClick={() => openHistory(s)}
+                        className="mt-0.5 block max-w-xs truncate text-left text-xs text-destructive underline decoration-dotted underline-offset-2 hover:text-destructive/80"
+                        title={`${s.last_error} — click to view sync history`}
+                      >
                         {s.last_error}
-                      </div>
+                      </button>
                     )}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
@@ -179,6 +205,14 @@ export default function IntelligenceSourcesPage() {
                   <TableCell className="text-xs text-muted-foreground">
                     {formatDate(s.last_successful_sync_at)}
                     {s.last_result_count !== null && <div>{s.last_result_count} item(s)</div>}
+                    {s.connector_key && (
+                      <button
+                        onClick={() => openHistory(s)}
+                        className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+                      >
+                        <History className="h-3 w-3" /> History
+                      </button>
+                    )}
                   </TableCell>
                   {isAdmin && (
                     <TableCell>
@@ -211,6 +245,52 @@ export default function IntelligenceSourcesPage() {
           </TableBody>
         </Table>
       </Card>
+
+      <Dialog open={historySource !== null} onOpenChange={(open) => { if (!open) setHistorySource(null); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Sync History — {historySource?.name}</DialogTitle>
+            <DialogDescription>
+              The most recent sync runs for this source, including the full error for any that failed —
+              no need to check Render logs.
+            </DialogDescription>
+          </DialogHeader>
+          {syncRunsError && (
+            <ErrorState message={syncRunsError} onRetry={() => historySource && openHistory(historySource)} />
+          )}
+          {!syncRunsError && syncRuns === null && <LoadingState />}
+          {!syncRunsError && syncRuns !== null && syncRuns.length === 0 && (
+            <p className="text-sm text-muted-foreground">No sync runs recorded yet for this source.</p>
+          )}
+          {!syncRunsError && syncRuns !== null && syncRuns.length > 0 && (
+            <div className="flex flex-col gap-3">
+              {syncRuns.map((run) => {
+                const statusBadge = SYNC_RUN_STATUS_BADGE[run.status];
+                return (
+                  <div key={run.id} className="rounded-md border border-border p-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-medium text-foreground">{formatDate(run.started_at)}</div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{titleCase(run.triggered_by)}</Badge>
+                        <Badge variant={statusBadge.variant}>{statusBadge.label}</Badge>
+                      </div>
+                    </div>
+                    <div className="mt-1.5 text-xs text-muted-foreground">
+                      Fetched {run.items_fetched} · Created {run.items_created} · Updated {run.items_updated} ·
+                      Unchanged {run.items_unchanged} · Errored {run.items_errored}
+                    </div>
+                    {run.error_detail && (
+                      <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded bg-secondary/40 p-2 text-xs text-destructive">
+                        {run.error_detail}
+                      </pre>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
