@@ -150,3 +150,76 @@ class AlertCategory(str, enum.Enum):
     TASK_DUE = "task_due"
     RECOMPETE_APPROACHING = "recompete_approaching"
     OTHER = "other"
+
+
+# --- Phase 2: multi-source intelligence platform (see docs/PHASE2_ARCHITECTURE.md) ---
+
+
+class IntelligenceCategory(str, enum.Enum):
+    """Where an intelligence_items row sits on the certainty spectrum. Only
+    LIVE_OPPORTUNITY and PRE_SOLICITATION are ever auto-promoted into Opportunity —
+    EARLY_SIGNAL and AWARD_INTELLIGENCE stay intelligence-only. See §2/§5."""
+
+    LIVE_OPPORTUNITY = "live_opportunity"
+    PRE_SOLICITATION = "pre_solicitation"
+    EARLY_SIGNAL = "early_signal"
+    AWARD_INTELLIGENCE = "award_intelligence"
+
+
+class JurisdictionLevel(str, enum.Enum):
+    FEDERAL = "federal"
+    STATE = "state"
+    LOCAL = "local"
+    REGIONAL = "regional"
+    PRIVATE = "private"
+
+
+class ConnectorType(str, enum.Enum):
+    API = "api"
+    RSS = "rss"
+    STRUCTURED_FILE = "structured_file"
+    CSV = "csv"
+    HTML_SCRAPE = "html_scrape"
+    PDF_PARSE = "pdf_parse"
+    MANUAL = "manual"
+
+
+class SourceHealthStatus(str, enum.Enum):
+    NEVER_RUN = "never_run"
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    FAILING = "failing"
+    NEEDS_CONFIGURATION = "needs_configuration"
+    MANUAL_ONLY = "manual_only"
+
+
+class DedupStatus(str, enum.Enum):
+    """Never set to CONFIRMED_SAME_PROJECT by code — the dedup engine only ever
+    proposes LIKELY/POSSIBLE; confirming is a human action. See §6."""
+
+    UNCLUSTERED = "unclustered"
+    LIKELY_DUPLICATE = "likely_duplicate"
+    POSSIBLE_DUPLICATE = "possible_duplicate"
+    CONFIRMED_SAME_PROJECT = "confirmed_same_project"
+
+
+class EstimatedTimeToProcurement(str, enum.Enum):
+    """Always displayed in the UI as a labeled estimate, never certainty."""
+
+    MONTHS_0_3 = "months_0_3"
+    MONTHS_3_6 = "months_3_6"
+    MONTHS_6_12 = "months_6_12"
+    MONTHS_12_24 = "months_12_24"
+    UNKNOWN = "unknown"
+
+
+class SyncRunStatus(str, enum.Enum):
+    RUNNING = "running"
+    SUCCESS = "success"
+    PARTIAL_FAILURE = "partial_failure"
+    FAILURE = "failure"
+
+
+class SyncTriggeredBy(str, enum.Enum):
+    MANUAL = "manual"
+    SCHEDULED = "scheduled"

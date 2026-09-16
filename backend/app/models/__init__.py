@@ -10,6 +10,13 @@ from app.models.contact import Contact, OpportunityContact  # noqa: F401
 from app.models.document import AiSolicitationAnalysis, OpportunityDocument  # noqa: F401
 from app.models.forecast import RevenueForecast, RevenueTarget  # noqa: F401
 from app.models.gonogo import GoNoGoCriteriaScore, GoNoGoReview  # noqa: F401
+from app.models.intelligence import (  # noqa: F401
+    AppSetting,
+    IntelligenceItem,
+    IntelligenceSource,
+    IntelligenceSyncRun,
+    ProjectCluster,
+)
 from app.models.opportunity import Opportunity, OpportunitySource  # noqa: F401
 from app.models.pipeline import PipelineStage  # noqa: F401
 from app.models.reference import Discipline, NaicsCode, OpportunityDiscipline  # noqa: F401
@@ -35,6 +42,11 @@ __all__ = [
     "RevenueTarget",
     "GoNoGoCriteriaScore",
     "GoNoGoReview",
+    "AppSetting",
+    "IntelligenceItem",
+    "IntelligenceSource",
+    "IntelligenceSyncRun",
+    "ProjectCluster",
     "Opportunity",
     "OpportunitySource",
     "PipelineStage",
