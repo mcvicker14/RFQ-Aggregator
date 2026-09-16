@@ -422,8 +422,21 @@ export interface KpiCards {
   early_stage_count: number;
 }
 
+export interface IntelligenceKpis {
+  live_opportunity_count: number;
+  pre_solicitation_count: number;
+  early_signal_count: number;
+  award_intelligence_count: number;
+  new_this_week: number;
+  sources_checked_today: number;
+  sources_with_errors: number;
+  new_intelligence_since_last_view: number;
+  last_viewed_at: string | null;
+}
+
 export interface DashboardSummary {
   kpis: KpiCards;
+  intelligence: IntelligenceKpis;
   pipeline_by_stage: ChartBucket[];
   pipeline_by_agency: ChartBucket[];
   pipeline_by_state: ChartBucket[];
@@ -434,6 +447,7 @@ export interface DashboardSummary {
   pipeline_value_over_time: ChartBucket[];
   upcoming_deadlines: OpportunityListItem[];
   highest_priority_opportunities: OpportunityListItem[];
+  high_priority_signals: IntelligenceItem[];
   attention_today_tasks: Task[];
 }
 

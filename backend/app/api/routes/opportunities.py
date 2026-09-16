@@ -13,6 +13,7 @@ from app.models.scoring import OpportunityScore
 from app.models.user import User
 from app.schemas.activity import ActivityRead
 from app.schemas.agency import AgencyRead
+from app.schemas.intelligence import IntelligenceItemRead
 from app.schemas.opportunity import (
     OpportunityCreate,
     OpportunityListItem,
@@ -156,6 +157,14 @@ def create_opportunity(
 def get_opportunity(opportunity_id: UUID, db: Session = Depends(get_db), _current: User = Depends(get_current_user)):
     opp = _get_or_404(db, opportunity_id)
     return _to_read(db, opp)
+
+
+@router.get("/{opportunity_id}/intelligence-timeline", response_model=list[IntelligenceItemRead])
+def get_opportunity_intelligence_timeline(
+    opportunity_id: UUID, db: Session = Depends(get_db), _current: User = Depends(get_current_user)
+):
+    _get_or_404(db, opportunity_id)
+    return opportunities_service.get_intelligence_timeline(db, opportunity_id)
 
 
 @router.patch("/{opportunity_id}", response_model=OpportunityRead)

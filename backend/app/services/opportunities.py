@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.enums import ActivityType, SetAsideType
+from app.models.intelligence import IntelligenceItem
 from app.models.opportunity import Opportunity
 from app.models.pipeline import PipelineStage
 from app.models.user import User
@@ -87,3 +88,25 @@ def change_stage(db: Session, opp: Opportunity, new_stage_id: UUID, actor: User,
     db.commit()
     db.refresh(opp)
     return opp
+
+
+def get_intelligence_timeline(db: Session, opportunity_id: UUID) -> list[IntelligenceItem]:
+    """Every intelligence item that fed into this opportunity, across every source
+    that reported it — items promoted directly into it, plus any other item sharing a
+    dedup cluster with one of those (e.g. an early signal spotted weeks before the
+    live solicitation it turned out to be), sorted oldest-first. See
+    docs/PHASE2_ARCHITECTURE.md §4/§11."""
+    direct_items = db.execute(
+        select(IntelligenceItem).where(IntelligenceItem.opportunity_id == opportunity_id)
+    ).scalars().all()
+
+    by_id = {item.id: item for item in direct_items}
+    cluster_ids = {item.project_cluster_id for item in direct_items if item.project_cluster_id}
+    if cluster_ids:
+        clustered_items = db.execute(
+            select(IntelligenceItem).where(IntelligenceItem.project_cluster_id.in_(cluster_ids))
+        ).scalars().all()
+        for item in clustered_items:
+            by_id[item.id] = item
+
+    return sorted(by_id.values(), key=lambda item: item.first_detected_at)

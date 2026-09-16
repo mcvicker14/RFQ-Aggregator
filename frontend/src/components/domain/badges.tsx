@@ -86,3 +86,15 @@ export function GoNoGoBadge({ value }: { value: string | null }) {
   const variant = value === "go" ? "success" : value === "conditional_go" ? "warning" : "destructive";
   return <Badge variant={variant}>{titleCase(value)}</Badge>;
 }
+
+export const INTELLIGENCE_CATEGORY_LABELS: Record<string, string> = {
+  live_opportunity: "Live Opportunity",
+  pre_solicitation: "Pre-Solicitation",
+  early_signal: "Early Signal",
+  award_intelligence: "Award Intelligence",
+};
+
+export function IntelligenceCategoryBadge({ value }: { value: string }) {
+  const variant = value === "live_opportunity" ? "success" : value === "pre_solicitation" ? "accent" : value === "early_signal" ? "warning" : "secondary";
+  return <Badge variant={variant}>{INTELLIGENCE_CATEGORY_LABELS[value] ?? titleCase(value)}</Badge>;
+}

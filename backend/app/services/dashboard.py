@@ -10,13 +10,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.agency import Agency
-from app.models.enums import MaturityStage, OpportunityStatus, TaskStatus
+from app.models.enums import IntelligenceCategory, MaturityStage, OpportunityStatus, SourceHealthStatus, TaskStatus
 from app.models.gonogo import GoNoGoReview
+from app.models.intelligence import IntelligenceItem, IntelligenceSource
 from app.models.opportunity import Opportunity
 from app.models.pipeline import PipelineStage
 from app.models.scoring import OpportunityScore
 from app.models.task import Task
-from app.schemas.dashboard import ChartBucket, DashboardSummary, KpiCards
+from app.models.user import User
+from app.schemas.dashboard import ChartBucket, DashboardSummary, IntelligenceKpis, KpiCards
 from app.schemas.opportunity import OpportunityListItem
 from app.schemas.task import TaskRead
 from app.services.app_settings import hide_sample_data_by_default
@@ -46,7 +48,66 @@ def _opportunity_to_list_item(opp: Opportunity, agency: Agency | None, score: Op
     )
 
 
-def build_dashboard_summary(db: Session) -> DashboardSummary:
+def _build_intelligence_kpis(
+    db: Session, user: User, now: datetime, week_ago: datetime, include_samples: bool
+) -> IntelligenceKpis:
+    item_query = select(IntelligenceItem)
+    if not include_samples:
+        item_query = item_query.where(IntelligenceItem.is_sample_data.is_(False))
+    items = db.execute(item_query).scalars().all()
+
+    counts_by_category = {c: 0 for c in IntelligenceCategory}
+    new_this_week = 0
+    for item in items:
+        counts_by_category[item.intelligence_category] += 1
+        if item.first_detected_at >= week_ago:
+            new_this_week += 1
+
+    today = now.date()
+    sources = db.execute(select(IntelligenceSource)).scalars().all()
+    sources_checked_today = sum(
+        1 for s in sources if s.last_attempted_sync_at and s.last_attempted_sync_at.date() == today
+    )
+    sources_with_errors = sum(
+        1 for s in sources if s.health_status in (SourceHealthStatus.FAILING, SourceHealthStatus.DEGRADED)
+    )
+
+    last_viewed_at = user.intelligence_last_viewed_at
+    new_since_last_view = sum(
+        1 for item in items if last_viewed_at is None or item.first_detected_at > last_viewed_at
+    )
+    # Advances the marker for next time — this load's own count is reported against
+    # the *old* value, captured above before this line changes it. See
+    # docs/PHASE2_ARCHITECTURE.md §11 and the User.intelligence_last_viewed_at comment.
+    user.intelligence_last_viewed_at = now
+    db.commit()
+
+    return IntelligenceKpis(
+        live_opportunity_count=counts_by_category[IntelligenceCategory.LIVE_OPPORTUNITY],
+        pre_solicitation_count=counts_by_category[IntelligenceCategory.PRE_SOLICITATION],
+        early_signal_count=counts_by_category[IntelligenceCategory.EARLY_SIGNAL],
+        award_intelligence_count=counts_by_category[IntelligenceCategory.AWARD_INTELLIGENCE],
+        new_this_week=new_this_week,
+        sources_checked_today=sources_checked_today,
+        sources_with_errors=sources_with_errors,
+        new_intelligence_since_last_view=new_since_last_view,
+        last_viewed_at=last_viewed_at,
+    )
+
+
+def _high_priority_signals(db: Session, include_samples: bool, limit: int = 10) -> list[IntelligenceItem]:
+    query = select(IntelligenceItem).where(
+        IntelligenceItem.intelligence_category == IntelligenceCategory.EARLY_SIGNAL,
+        IntelligenceItem.opportunity_id.is_(None),
+        IntelligenceItem.early_signal_score.isnot(None),
+    )
+    if not include_samples:
+        query = query.where(IntelligenceItem.is_sample_data.is_(False))
+    query = query.order_by(IntelligenceItem.early_signal_score.desc()).limit(limit)
+    return db.execute(query).scalars().all()
+
+
+def build_dashboard_summary(db: Session, user: User) -> DashboardSummary:
     now = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
     thirty_days = now + timedelta(days=30)
@@ -54,8 +115,11 @@ def build_dashboard_summary(db: Session) -> DashboardSummary:
     # Sample data is included by default (unchanged behavior) unless an administrator
     # has explicitly turned this on — see docs/PHASE2_ARCHITECTURE.md §9. This is a
     # deliberate opt-in, not a silent change to numbers a user may already be checking.
+    # Shared by the opportunity, intelligence-item, and high-priority-signal queries
+    # below, so sample visibility stays consistent across every part of this summary.
+    include_samples = not hide_sample_data_by_default(db)
     opp_query = select(Opportunity).where(Opportunity.status == OpportunityStatus.ACTIVE)
-    if hide_sample_data_by_default(db):
+    if not include_samples:
         opp_query = opp_query.where(Opportunity.is_sample_data.is_(False))
     opportunities = db.execute(opp_query).scalars().all()
     stages = {s.id: s for s in db.execute(select(PipelineStage)).scalars().all()}
@@ -195,8 +259,12 @@ def build_dashboard_summary(db: Session) -> DashboardSummary:
 
     opp_titles = {o.id: o.title for o in opportunities}
 
+    intelligence_kpis = _build_intelligence_kpis(db, user, now, week_ago, include_samples)
+    high_priority_signals = _high_priority_signals(db, include_samples)
+
     return DashboardSummary(
         kpis=kpis,
+        intelligence=intelligence_kpis,
         pipeline_by_stage=_to_buckets(by_stage),
         pipeline_by_agency=_to_buckets(by_agency),
         pipeline_by_state=_to_buckets(by_state),
@@ -215,6 +283,7 @@ def build_dashboard_summary(db: Session) -> DashboardSummary:
             _opportunity_to_list_item(o, agencies.get(o.agency_id), scores_by_opp.get(o.id))
             for o in highest_priority
         ],
+        high_priority_signals=list(high_priority_signals),
         attention_today_tasks=[
             TaskRead(
                 id=t.id, opportunity_id=t.opportunity_id, opportunity_title=opp_titles.get(t.opportunity_id),

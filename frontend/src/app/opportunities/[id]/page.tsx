@@ -17,6 +17,7 @@ import { TeamTab } from "@/components/opportunities/detail/team-tab";
 import { DocumentsTab } from "@/components/opportunities/detail/documents-tab";
 import { ForecastTab } from "@/components/opportunities/detail/forecast-tab";
 import { TimelineTab } from "@/components/opportunities/detail/timeline-tab";
+import { IntelligenceTimelineTab } from "@/components/opportunities/detail/intelligence-timeline-tab";
 
 export default function OpportunityDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -93,6 +94,7 @@ export default function OpportunityDetailPage() {
           <TabsTrigger value="documents">Documents</TabsTrigger>
           <TabsTrigger value="forecast">Forecast</TabsTrigger>
           <TabsTrigger value="timeline">Timeline</TabsTrigger>
+          <TabsTrigger value="intelligence">Intelligence History</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview"><OverviewTab opportunity={opp} onUpdated={setOpp} /></TabsContent>
@@ -103,6 +105,7 @@ export default function OpportunityDetailPage() {
         <TabsContent value="documents"><DocumentsTab opportunityId={opp.id} /></TabsContent>
         <TabsContent value="forecast"><ForecastTab opportunity={opp} /></TabsContent>
         <TabsContent value="timeline"><TimelineTab opportunityId={opp.id} /></TabsContent>
+        <TabsContent value="intelligence"><IntelligenceTimelineTab opportunityId={opp.id} /></TabsContent>
       </Tabs>
     </div>
   );

@@ -11,5 +11,5 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 
 @router.get("/summary", response_model=DashboardSummary)
-def dashboard_summary(db: Session = Depends(get_db), _current: User = Depends(get_current_user)):
-    return build_dashboard_summary(db)
+def dashboard_summary(db: Session = Depends(get_db), current: User = Depends(get_current_user)):
+    return build_dashboard_summary(db, current)

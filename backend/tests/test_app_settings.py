@@ -1,5 +1,6 @@
 from app.models.enums import OpportunityStatus
 from app.models.opportunity import Opportunity
+from app.models.user import User
 from app.services.app_settings import HIDE_SAMPLE_DATA_KEY, get_setting, hide_sample_data_by_default, set_setting
 from app.services.dashboard import build_dashboard_summary
 
@@ -24,17 +25,19 @@ def test_hide_sample_data_defaults_to_false(db):
 
 
 def test_dashboard_includes_sample_opportunities_by_default(db):
-    summary = build_dashboard_summary(db)
+    user = db.query(User).first()
+    summary = build_dashboard_summary(db, user)
     sample_count = db.query(Opportunity).filter_by(is_sample_data=True).count()
     assert sample_count > 0  # sanity: the seeded sample data is actually there
     assert summary.kpis.total_active_opportunities >= sample_count
 
 
 def test_dashboard_excludes_sample_opportunities_when_setting_enabled(db):
-    baseline = build_dashboard_summary(db)
+    user = db.query(User).first()
+    baseline = build_dashboard_summary(db, user)
 
     set_setting(db, HIDE_SAMPLE_DATA_KEY, True, None)
-    summary = build_dashboard_summary(db)
+    summary = build_dashboard_summary(db, user)
 
     live_active_count = db.query(Opportunity).filter_by(is_sample_data=False, status=OpportunityStatus.ACTIVE).count()
     assert summary.kpis.total_active_opportunities == live_active_count

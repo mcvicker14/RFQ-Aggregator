@@ -1,27 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Radar, ExternalLink } from "lucide-react";
 import { intelligenceItemsApi } from "@/lib/api/resources";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LoadingState, ErrorState, EmptyState } from "@/components/ui/states";
-import { SampleDataBadge } from "@/components/domain/badges";
+import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABELS } from "@/components/domain/badges";
 import { titleCase } from "@/lib/utils";
 import type { IntelligenceItem, IntelligenceCategory } from "@/types";
-
-const CATEGORY_BADGE: Record<IntelligenceCategory, { variant: "success" | "accent" | "warning" | "secondary"; label: string }> = {
-  live_opportunity: { variant: "success", label: "Live Opportunity" },
-  pre_solicitation: { variant: "accent", label: "Pre-Solicitation" },
-  early_signal: { variant: "warning", label: "Early Signal" },
-  award_intelligence: { variant: "secondary", label: "Award Intelligence" },
-};
 
 const CATEGORIES: IntelligenceCategory[] = ["live_opportunity", "pre_solicitation", "early_signal", "award_intelligence"];
 
@@ -35,13 +27,14 @@ function formatMoney(value: number | null): string {
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
-export default function DiscoverPage() {
+function DiscoverPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [items, setItems] = useState<IntelligenceItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [q, setQ] = useState("");
-  const [category, setCategory] = useState("");
+  const [category, setCategory] = useState(searchParams.get("category") ?? "");
   const [state, setState] = useState("");
   const [hideSampleData, setHideSampleData] = useState(false);
   const [sortBy, setSortBy] = useState("first_detected_at");
@@ -83,7 +76,7 @@ export default function DiscoverPage() {
           <SelectTrigger className="w-48"><SelectValue placeholder="Category" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All categories</SelectItem>
-            {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{CATEGORY_BADGE[c].label}</SelectItem>)}
+            {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{INTELLIGENCE_CATEGORY_LABELS[c]}</SelectItem>)}
           </SelectContent>
         </Select>
         <Input placeholder="State (e.g. LA)" value={state} onChange={(e) => setState(e.target.value.toUpperCase())} className="w-32" maxLength={2} />
@@ -134,7 +127,6 @@ export default function DiscoverPage() {
             </TableHeader>
             <TableBody>
               {items.map((item) => {
-                const badge = CATEGORY_BADGE[item.intelligence_category];
                 const promoted = !!item.opportunity_id;
                 return (
                   <TableRow
@@ -142,7 +134,7 @@ export default function DiscoverPage() {
                     className={promoted ? "cursor-pointer" : ""}
                     onClick={() => promoted && router.push(`/opportunities/${item.opportunity_id}`)}
                   >
-                    <TableCell><Badge variant={badge.variant}>{badge.label}</Badge></TableCell>
+                    <TableCell><IntelligenceCategoryBadge value={item.intelligence_category} /></TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2 font-medium text-foreground">
                         {item.title} {item.is_sample_data && <SampleDataBadge />}
@@ -186,5 +178,13 @@ export default function DiscoverPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+export default function DiscoverPage() {
+  return (
+    <Suspense fallback={<LoadingState />}>
+      <DiscoverPageInner />
+    </Suspense>
   );
 }

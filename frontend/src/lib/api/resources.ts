@@ -219,6 +219,8 @@ export interface IntelligenceItemListParams {
 export const intelligenceItemsApi = {
   list: (params: IntelligenceItemListParams = {}) =>
     api.get<IntelligenceItem[]>(`/api/intelligence/items${buildQuery(params)}`),
+  timeline: (opportunityId: string) =>
+    api.get<IntelligenceItem[]>(`/api/opportunities/${opportunityId}/intelligence-timeline`),
 };
 
 // --- Settings -----------------------------------------------------------------------
