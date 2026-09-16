@@ -142,6 +142,22 @@ React state/`useEffect`/route handlers — no heavier data-fetching library was 
 the MVP to keep the dependency surface small; this is a documented place to introduce
 TanStack Query later if caching needs grow (see `docs/ROADMAP.md`).
 
+### How the browser reaches the backend
+
+The browser only ever talks to the frontend's own origin. Every call the API client
+makes is to a relative `/api/...` path, which `frontend/src/app/api/[...path]/route.ts`
+— a Next.js Route Handler, not a `next.config.js` `rewrites()` rule — forwards
+server-side to `${BACKEND_URL}/api/...`. This matters specifically because of how
+this app is deployed (Docker, `BACKEND_URL` set as a container runtime environment
+variable): `rewrites()` is resolved once at `next build` time, before any runtime
+environment variable exists, so a rewrites-based proxy silently bakes in whatever
+`BACKEND_URL` happens to be at build time — nothing, in a Docker build stage — and
+ignores it being set correctly afterward. A Route Handler's function body runs fresh
+on every request at real server runtime, so it always sees the container's actual
+`BACKEND_URL`. One practical consequence worth knowing: because the browser never
+calls the backend's origin directly, the backend's CORS configuration
+(`FRONTEND_ORIGIN`) is defense-in-depth, not something normal usage depends on.
+
 ## 5. Data provenance (cross-cutting)
 
 Every record that originates outside a human typing it into the app (an ingested
