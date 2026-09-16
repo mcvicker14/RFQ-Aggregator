@@ -524,23 +524,34 @@ def seed_demo_data(db: Session, admin: User) -> None:
 
 
 def main():
+    import os
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-demo", action="store_true", help="Skip SAMPLE DATA opportunities/companies/contacts")
-    parser.add_argument("--admin-email", default="ericmcvicker14@gmail.com")
-    parser.add_argument("--admin-name", default="Eric McVicker")
-    parser.add_argument("--admin-password", default=None, help="If omitted, a random password is generated and printed once")
+    parser.add_argument("--admin-email", default=os.environ.get("ADMIN_INITIAL_EMAIL", "admin@example.com"))
+    parser.add_argument("--admin-name", default=os.environ.get("ADMIN_INITIAL_NAME", "Administrator"))
+    parser.add_argument(
+        "--admin-password",
+        default=None,
+        help=(
+            "Sets the initial administrator password. Prefer setting ADMIN_INITIAL_PASSWORD in "
+            "backend/.env instead of passing this on the command line (shell history/process "
+            "lists can leak CLI args). If neither is set, a random password is generated and "
+            "printed once, for pure local-dev convenience only — rotate it immediately for "
+            "anything beyond a throwaway local database."
+        ),
+    )
     args = parser.parse_args()
 
     db = SessionLocal()
     try:
         seed_reference_data(db)
 
-        password = args.admin_password
-        generated = False
-        if password is None:
+        password = args.admin_password or os.environ.get("ADMIN_INITIAL_PASSWORD")
+        generated = password is None
+        if generated:
             import secrets
-            password = secrets.token_urlsafe(12)
-            generated = True
+            password = secrets.token_urlsafe(16)
 
         admin = seed_admin_user(db, args.admin_email, args.admin_name, password)
 
@@ -550,9 +561,13 @@ def main():
         if generated:
             print("\n" + "=" * 70)
             print(f"Administrator login created:\n  email:    {args.admin_email}\n  password: {password}")
-            print("This password is shown only once and is NOT stored anywhere in the repo.")
-            print("Log in and note it somewhere safe (a password manager) right away.")
+            print("No ADMIN_INITIAL_PASSWORD was set, so this was randomly generated for local-dev")
+            print("convenience only. It is not stored anywhere in the repo or database in plaintext.")
+            print("Treat it as a one-time bootstrap credential: log in, then set your own password")
+            print("(or re-run this script with ADMIN_INITIAL_PASSWORD set) before any real use.")
             print("=" * 70)
+        else:
+            print(f"\nAdministrator login ready for {args.admin_email} (password set from configuration).")
     finally:
         db.close()
 

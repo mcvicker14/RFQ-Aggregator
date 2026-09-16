@@ -6,15 +6,13 @@ Local email/password authentication with hashed passwords (bcrypt via `passlib`)
 short-lived **JWT access tokens** (`backend/app/core/security.py`), issued on
 `POST /api/auth/login` and required (as a bearer token) on every other endpoint.
 
-**Microsoft 365 / Google Workspace SSO (spec §25/§21) is architected but not wired in
-this build** — it requires Principal's own Azure AD / Google Workspace tenant
-credentials (an app registration only Principal's IT admin can create), which this
-sandbox cannot obtain or fabricate. `backend/app/core/auth_providers.py` documents the
-OAuth2/OIDC flow this would plug into (Authlib against Microsoft's `/common/v2.0`
-endpoint) so wiring it up later is a configuration + credential task, not a rewrite.
-This is called out explicitly in the README as something Principal's IT admin needs to
-set up when ready — see the root README's "Things you'll eventually need to do outside
-the code" section.
+**Microsoft 365 / Google Workspace SSO (spec §25/§21) is not implemented in this
+build.** It requires Principal's own Azure AD / Google Workspace tenant credentials
+(an app registration only Principal's IT admin can create), which this sandbox
+cannot obtain or fabricate. Local email/password auth (above) is the only sign-in
+method right now. Adding SSO later means introducing an OAuth2/OIDC flow (e.g. via
+Authlib against Microsoft's `/common/v2.0` endpoint) alongside the existing
+JWT-based auth — a new, scoped piece of work, not a rewrite of what's here.
 
 ## Roles & permissions (spec §21)
 

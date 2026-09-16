@@ -29,6 +29,13 @@ from app.db.session import engine
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
 
+if settings.is_production and settings.JWT_SECRET_KEY == "INSECURE-DEV-ONLY-CHANGE-ME":
+    raise RuntimeError(
+        "JWT_SECRET_KEY is still the insecure development default while ENV=production. "
+        "Set a real JWT_SECRET_KEY (see backend/.env.example) before starting the server — "
+        "refusing to start rather than silently issuing forgeable tokens."
+    )
+
 app = FastAPI(
     title=settings.APP_NAME,
     description="Principal Opportunity Intelligence — Find Earlier. Pursue Smarter. Win More.",
