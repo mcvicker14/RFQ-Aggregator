@@ -71,8 +71,23 @@ before Phase 2, when every notice became a pipeline opportunity).
   vendor contract.
 - **Request:** `postedFrom`/`postedTo` (required by the API, max 1-year span — the
   connector pages backward in ≤1-year windows if a longer backfill is requested),
-  `limit`/`offset` for pagination, and `ncode` (NAICS, defaulting to Principal's
-  primary + secondary codes).
+  `limit`/`offset` for pagination, `ptype` (all six substantive notice type codes —
+  Sources Sought and Presolicitations are always requested, never dropped), and
+  `ncode` — defaulting to the NAICS **5413\* prefix** (the whole "Architectural,
+  Engineering, and Related Services" subsector SAM.gov's own filter supports
+  prefix-matching on, not just the single primary code) plus Principal's configured
+  secondary codes.
+- **Two-stage retrieval, not just a filter.** A production incident (healthy
+  connection, 0 items on manual sync) turned out to be an overly narrow default NAICS
+  filter (a handful of exact codes, no NAICS-family breadth), not a broken
+  integration — see the fix's detail in the module docstring. Stage 1 is the broad
+  request above; Stage 2 (`_score_relevance()` in `sam_gov.py`) ranks every result
+  against Principal's actual practice profile (keyword relevance, weighted
+  agencies — VA/USACE/Air Force/DoD/FEMA/NRCS, Gulf Coast/Southeast region, SDVOSB/
+  small-business set-asides) and drops the rare notice that only matched Stage 1 on a
+  technicality, plus any Live Opportunity/Pre-Solicitation already past its own
+  proposal deadline. Results are sorted best-match-first before being capped, so a
+  broader Stage 1 means better results, not just more of them.
 - **Response parsing is defensive on purpose.** This sandbox's network egress allowlist
   blocks documentation sites, so the field mapping in `sam_gov.py` was written from
   well-established public knowledge of this stable API rather than a live fetch of the

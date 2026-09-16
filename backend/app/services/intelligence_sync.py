@@ -68,7 +68,9 @@ def _resolve_agency_for_item(db: Session, item: IntelligenceItem) -> Agency | No
     name = item.agency_name.strip()
     agency = db.execute(select(Agency).where(Agency.name == name)).scalars().first()
     if agency is None:
-        agency = Agency(name=name, source=item.source, confidence=item.confidence)
+        # Agency has no source/confidence columns — that provenance lives on the
+        # OpportunitySource row promote_intelligence_item() writes below, not here.
+        agency = Agency(name=name)
         db.add(agency)
         db.flush()
     return agency
