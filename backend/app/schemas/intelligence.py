@@ -104,6 +104,13 @@ class IntelligenceItemRead(ORMModel):
     relevant_disciplines: list[str] | None
     early_signal_score: int | None
     early_signal_score_rationale: dict | None
+    sam_relevance_score: int | None
+    sam_relevance_rationale: dict | None
+    # Not an IntelligenceItem column — the latest OpportunityScore for the Opportunity
+    # this item promoted to, if any (None for an unpromoted item or one with no score
+    # yet). Set on the ORM instance by the route before serialization; see
+    # list_intelligence_items()'s pursuit-score join.
+    pursuit_score: int | None = None
     first_detected_at: datetime
     last_seen_at: datetime
     opportunity_id: UUID | None

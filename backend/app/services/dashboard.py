@@ -6,7 +6,7 @@ thousands, these queries are the place to push the aggregation into SQL.
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.agency import Agency
@@ -22,6 +22,7 @@ from app.schemas.dashboard import ChartBucket, DashboardSummary, IntelligenceKpi
 from app.schemas.opportunity import OpportunityListItem
 from app.schemas.task import TaskRead
 from app.services.app_settings import hide_sample_data_by_default
+from app.services.sam_relevance_scoring import RELEVANT_THRESHOLD
 
 EARLY_STAGES = {
     MaturityStage.RUMORED_CONCEPTUAL, MaturityStage.FUNDING_IDENTIFIED, MaturityStage.PLANNING,
@@ -51,7 +52,15 @@ def _opportunity_to_list_item(opp: Opportunity, agency: Agency | None, score: Op
 def _build_intelligence_kpis(
     db: Session, user: User, now: datetime, week_ago: datetime, include_samples: bool
 ) -> IntelligenceKpis:
-    item_query = select(IntelligenceItem)
+    # Excludes SAM.gov items below RELEVANT_THRESHOLD by default — the same "is this
+    # even worth Principal's attention" bar Discover's default view uses (see
+    # app/services/sam_relevance_scoring.py). A raw fetch/error count for SAM.gov
+    # itself is still fully visible on the Source Manager page; this is specifically
+    # about not flooding the *intelligence* counts a user reads as "what's new to look
+    # at." Never excludes any other source — those have no SAM relevance score at all.
+    item_query = select(IntelligenceItem).where(
+        or_(IntelligenceItem.sam_relevance_score.is_(None), IntelligenceItem.sam_relevance_score >= RELEVANT_THRESHOLD)
+    )
     if not include_samples:
         item_query = item_query.where(IntelligenceItem.is_sample_data.is_(False))
     items = db.execute(item_query).scalars().all()

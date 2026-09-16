@@ -61,8 +61,8 @@ const DIAGNOSTIC_FIELD_LABEL: Record<string, string> = {
   notice_type_codes: "Notice types",
   total_records_by_naics: "SAM totalRecords (by NAICS)",
   pages_fetched: "Pages fetched",
-  candidates_before_relevance_filter: "Candidates before relevance filter",
-  records_after_relevance_filter: "Records accepted after relevance filter",
+  candidates_collected: "Notices collected (deduped)",
+  records_returned: "Records returned to sync",
 };
 
 // Diagnostics shape is connector-specific (only SAM.gov reports it today), so this

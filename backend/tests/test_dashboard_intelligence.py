@@ -93,6 +93,22 @@ def test_new_intelligence_since_last_view_advances_the_marker(db):
     assert second_summary.intelligence.last_viewed_at is not None  # now reflects the first call's timestamp
 
 
+def test_intelligence_counts_exclude_low_relevance_sam_items_by_default(db):
+    # "Do not include hidden low-relevance records in dashboard opportunity counts" —
+    # a SAM.gov item scored below RELEVANT_THRESHOLD must not inflate the intelligence
+    # KPIs a user reads as "what's new," the same default Discover applies.
+    user = db.query(User).first()
+    source = _source(db)
+    _item(db, source, external_id="A", intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY, sam_relevance_score=85)
+    _item(db, source, external_id="B", intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY, sam_relevance_score=20)
+    # Not from SAM.gov (no score at all) — never excluded by this filter.
+    _item(db, source, external_id="C", intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY, sam_relevance_score=None)
+
+    summary = build_dashboard_summary(db, user)
+
+    assert summary.intelligence.live_opportunity_count == 2  # A (relevant) + C (unscored, not SAM) — not B
+
+
 def test_high_priority_signals_excludes_promoted_and_unscored_items(db):
     user = db.query(User).first()
     existing_opp = db.query(Opportunity).first()

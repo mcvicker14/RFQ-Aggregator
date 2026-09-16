@@ -140,6 +140,15 @@ class IntelligenceItem(UUIDPKMixin, TimestampMixin, Base):
     early_signal_score: Mapped[int | None] = mapped_column(Integer, default=None)
     early_signal_score_rationale: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
+    # "Is this SAM.gov notice even worth putting in front of Principal?" — distinct
+    # from early_signal_score (a different question, for EARLY_SIGNAL items only) and
+    # from the Principal Pursuit Score (lives on Opportunity, answers "how attractive
+    # is this actual pursuit" once something already cleared this bar). Only populated
+    # for source == "SAM.gov" today — see app/services/sam_relevance_scoring.py; NULL
+    # for every other source, which is not filtered by it. See docs/SCORING_METHODOLOGY.md.
+    sam_relevance_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    sam_relevance_rationale: Mapped[dict | None] = mapped_column(JSONB, default=None)
+
     raw_metadata: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
     first_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

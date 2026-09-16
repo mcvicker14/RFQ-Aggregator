@@ -38,6 +38,7 @@ from app.models.pipeline import PipelineStage
 from app.services.activities import log_activity
 from app.services.dedup import find_and_cluster_candidates
 from app.services.early_signal_scoring import calculate_early_signal_score
+from app.services.sam_relevance_scoring import RELEVANT_THRESHOLD, calculate_sam_relevance_score
 from app.services.scoring import calculate_score
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,16 @@ def promote_intelligence_item(db: Session, item: IntelligenceItem) -> Opportunit
     needs no changes. No-op (returns None) for EARLY_SIGNAL/AWARD_INTELLIGENCE items —
     those never become a pipeline entry on their own (§2/§5).
 
+    Also no-op for a SAM.gov item scored below RELEVANT_THRESHOLD (see
+    app/services/sam_relevance_scoring.py) — broad SAM retrieval is intentional for
+    intelligence/auditability, but that must not mean every fetched notice becomes a
+    real, trackable Opportunity cluttering Pipeline/Dashboard/Go-No-Go. The
+    IntelligenceItem itself is never dropped, only left unpromoted; a human can still
+    find it via Discover's "All SAM Records" filter. Requires calculate_sam_relevance_score()
+    to have already run on this item — run_sync() sequences the calls that way. Every
+    other source's items are unaffected (sam_relevance_score is only ever populated
+    for source == "SAM.gov"), so this check is a pure no-op for them.
+
     Known limitation, left for later: this does not yet check whether item's
     project_cluster has an already-promoted sibling and attach to that same
     Opportunity — it only matches on solicitation_number/external_id, same as the
@@ -93,6 +104,8 @@ def promote_intelligence_item(db: Session, item: IntelligenceItem) -> Opportunit
     for this pass.
     """
     if item.intelligence_category not in PROMOTABLE_CATEGORIES:
+        return None
+    if item.sam_relevance_score is not None and item.sam_relevance_score < RELEVANT_THRESHOLD:
         return None
 
     existing = db.get(Opportunity, item.opportunity_id) if item.opportunity_id else None
@@ -318,6 +331,7 @@ def run_sync(
         fetched += 1
         try:
             item, was_created = _upsert_intelligence_item(db, source, raw)
+            calculate_sam_relevance_score(item)  # must run before promotion — it gates it
             promote_intelligence_item(db, item)
             calculate_early_signal_score(db, item)
             find_and_cluster_candidates(db, item)

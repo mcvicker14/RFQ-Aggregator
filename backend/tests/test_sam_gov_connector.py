@@ -14,12 +14,10 @@ import app.connectors.sam_gov as sam_gov_module
 from app.connectors.base import RawIntelligenceItem
 from app.connectors.registry import get_intelligence_connector
 from app.connectors.sam_gov import (
-    MIN_RELEVANCE_SCORE,
     SamGovConnector,
     _extract_place_of_performance,
     _is_expired_opportunity,
     _map_notice_type,
-    _score_relevance,
 )
 from app.models.enums import IntelligenceCategory, SetAsideType, SourceHealthStatus, SyncRunStatus, SyncTriggeredBy
 from app.models.intelligence import IntelligenceItem, IntelligenceSource
@@ -159,78 +157,6 @@ def test_is_configured_reflects_api_key(monkeypatch):
 
     monkeypatch.setattr(sam_gov_module.settings, "SAM_GOV_API_KEY", "test-key")
     assert connector.is_configured() is True
-
-
-# --- Stage 2: relevance scoring -----------------------------------------------------
-#
-# Diagnosed production incident: a healthy, connected SAM.gov source returned 0 items
-# on manual sync. Root cause was an overly narrow Stage 1 query (exact NAICS codes,
-# no notice-type breadth), not a broken integration — see the module docstring for the
-# full investigation. These tests cover the redesign: a broader Stage 1 query plus
-# Stage 2 relevance ranking/filtering so "broader" doesn't mean "flooded with noise."
-
-def test_score_relevance_strong_match_scores_high():
-    notice = _sam_notice(
-        title="Water Main and Sewer Main Replacement — Civil Engineering Design Services",
-        fullParentPathName="DEPT OF VETERANS AFFAIRS.VISN 16",
-        naicsCode="541330",
-        typeOfSetAsideDescription="Service-Disabled Veteran-Owned Small Business (SDVOSB) Set-Aside",
-    )
-    score = _score_relevance(notice)
-    # Multiple keyword hits (water/sewer/civil engineering/design services) + NAICS
-    # family + VA agency + LA region (default fixture) + SDVOSB — every bonus firing.
-    assert score >= 10
-
-
-def test_score_relevance_bare_in_family_notice_still_clears_the_floor():
-    # No keywords, no weighted agency, no region, no set-aside — only NAICS-family
-    # membership. Stage 1 already guarantees that membership, so this must still pass:
-    # the floor isn't meant to re-litigate what Stage 1 already decided.
-    notice = _sam_notice(
-        title="Task Order 0004",
-        fullParentPathName="GENERAL SERVICES ADMINISTRATION",
-        naicsCode="541330",
-        typeOfSetAsideDescription=None,
-        placeOfPerformance={},
-        officeAddress={},
-    )
-    assert _score_relevance(notice) >= MIN_RELEVANCE_SCORE
-
-
-def test_score_relevance_off_topic_non_family_notice_falls_below_floor():
-    notice = _sam_notice(
-        title="Janitorial Supplies Blanket Purchase Agreement",
-        fullParentPathName="GENERAL SERVICES ADMINISTRATION",
-        naicsCode="325611",  # Soap and cleaning compound manufacturing — unrelated
-        typeOfSetAsideDescription=None,
-        placeOfPerformance={},
-        officeAddress={},
-    )
-    assert _score_relevance(notice) < MIN_RELEVANCE_SCORE
-
-
-def test_score_relevance_naics_family_prefix_bonus():
-    in_family = _sam_notice(naicsCode="541370", title="", fullParentPathName="", typeOfSetAsideDescription=None, placeOfPerformance={}, officeAddress={})
-    out_of_family = _sam_notice(naicsCode="325611", title="", fullParentPathName="", typeOfSetAsideDescription=None, placeOfPerformance={}, officeAddress={})
-    assert _score_relevance(in_family) > _score_relevance(out_of_family)
-
-
-def test_score_relevance_weighted_agency_bonus():
-    usace = _sam_notice(fullParentPathName="DEPT OF DEFENSE.DEPT OF THE ARMY.USACE.NEW ORLEANS DISTRICT")
-    other = _sam_notice(fullParentPathName="DEPT OF AGRICULTURE.SOME OFFICE")
-    assert _score_relevance(usace) > _score_relevance(other)
-
-
-def test_score_relevance_gulf_coast_region_bonus():
-    louisiana = _sam_notice(placeOfPerformance={"city": {"name": "New Orleans"}, "state": {"code": "LA"}})
-    other_state = _sam_notice(placeOfPerformance={"city": {"name": "Chicago"}, "state": {"code": "IL"}})
-    assert _score_relevance(louisiana) > _score_relevance(other_state)
-
-
-def test_score_relevance_sdvosb_scores_higher_than_plain_small_business():
-    sdvosb = _sam_notice(typeOfSetAsideDescription="Service-Disabled Veteran-Owned Small Business Set-Aside")
-    small_biz = _sam_notice(typeOfSetAsideDescription="Total Small Business Set-Aside")
-    assert _score_relevance(sdvosb) > _score_relevance(small_biz)
 
 
 def test_extract_place_of_performance_falls_back_to_office_address():
@@ -380,8 +306,8 @@ def test_fetch_attaches_last_run_diagnostics_with_the_documented_shape(monkeypat
     assert retrieval["notice_type_codes"] == sam_gov_module.NOTICE_TYPE_CODES
     assert set(retrieval["total_records_by_naics"]) == set(retrieval["naics_codes_queried"])
     assert retrieval["pages_fetched"] >= len(retrieval["naics_codes_queried"])
-    assert retrieval["candidates_before_relevance_filter"] == 0
-    assert retrieval["records_after_relevance_filter"] == 0
+    assert retrieval["candidates_collected"] == 0
+    assert retrieval["records_returned"] == 0
 
 
 def test_fetch_deduplicates_the_same_notice_returned_by_multiple_naics_queries(monkeypatch):
@@ -403,9 +329,14 @@ def test_fetch_deduplicates_the_same_notice_returned_by_multiple_naics_queries(m
     assert results[0].external_id == "abc123"
 
 
-def test_fetch_ranks_best_match_first_drops_expired_and_below_floor(monkeypatch):
-    strong = _sam_notice(
-        noticeId="strong-1",
+def test_fetch_keeps_every_non_expired_notice_regardless_of_topical_relevance(monkeypatch):
+    # Production, round 3: a live sync of 355 records showed most of what SAM.gov's own
+    # NAICS/notice-type tagging lets through isn't Principal-relevant — but the fix for
+    # that is Stage 2 scoring *after* persistence (app/services/sam_relevance_scoring.py),
+    # not dropping records here. fetch() itself must keep everything not expired,
+    # on-topic or not, for intelligence/auditability — see the module docstring.
+    relevant = _sam_notice(
+        noticeId="relevant-1",
         title="Water Main Replacement — Civil Engineering Design Services",
         fullParentPathName="DEPT OF VETERANS AFFAIRS.VISN 16",
         type="Solicitation",
@@ -423,7 +354,7 @@ def test_fetch_ranks_best_match_first_drops_expired_and_below_floor(monkeypatch)
     )
     expired = _sam_notice(
         noticeId="expired-1",
-        title="Civil Engineering Services — should be filtered for being expired, not irrelevance",
+        title="Civil Engineering Services — should be filtered for being expired",
         type="Solicitation",
         responseDeadLine="2020-01-01T17:00:00-05:00",
     )
@@ -438,9 +369,8 @@ def test_fetch_ranks_best_match_first_drops_expired_and_below_floor(monkeypatch)
         type="Solicitation",
         responseDeadLine="2030-06-01T17:00:00-05:00",
     )
-    # Deliberately unsorted arrival order, to prove fetch() does the sorting itself.
     payload = {
-        "opportunitiesData": [bare, off_topic, expired, strong],
+        "opportunitiesData": [bare, off_topic, expired, relevant],
         "totalRecords": 4,
         "page_metadata": {"hasNext": False},
     }
@@ -450,11 +380,9 @@ def test_fetch_ranks_best_match_first_drops_expired_and_below_floor(monkeypatch)
 
     results = SamGovConnector().fetch(since=date.today() - timedelta(days=30))
 
-    external_ids = [r.external_id for r in results]
-    assert external_ids[0] == "strong-1"  # highest relevance score sorts first
-    assert "bare-1" in external_ids  # NAICS-family membership alone still clears the floor
-    assert "expired-1" not in external_ids  # past its own deadline
-    assert "off-topic-1" not in external_ids  # non-family NAICS, no relevance signal at all
+    external_ids = {r.external_id for r in results}
+    assert external_ids == {"relevant-1", "bare-1", "off-topic-1"}  # everything except the expired one
+    assert "expired-1" not in external_ids  # past its own deadline — the one thing still filtered here
 
 
 def test_fetch_still_returns_sources_sought_and_presolicitations(monkeypatch):

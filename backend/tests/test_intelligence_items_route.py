@@ -9,6 +9,7 @@ from app.main import app
 from app.models.enums import ConnectorType, IntelligenceCategory, JurisdictionLevel, UserRole
 from app.models.intelligence import IntelligenceItem, IntelligenceSource
 from app.models.opportunity import Opportunity
+from app.models.scoring import OpportunityScore
 from app.models.user import User
 
 NOW = datetime.now(timezone.utc)
@@ -117,3 +118,114 @@ def test_unpromoted_only_filter_excludes_items_linked_to_an_opportunity(client, 
     assert response.status_code == 200
     titles = [i["title"] for i in response.json()]
     assert titles == ["Not yet promoted"]
+
+
+# --- sam_relevance_tier: the default-view filter -------------------------------------
+
+def test_default_sam_relevance_tier_hides_low_scoring_sam_items(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Highly relevant", sam_relevance_score=85)
+    _item(db, source, external_id="B", title="Relevant", sam_relevance_score=65)
+    _item(db, source, external_id="C", title="Possible match", sam_relevance_score=55)
+    _item(db, source, external_id="D", title="Low relevance", sam_relevance_score=20)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})  # default tier
+
+    titles = {i["title"] for i in response.json()}
+    assert titles == {"Highly relevant", "Relevant"}
+
+
+def test_sam_relevance_tier_never_hides_items_with_no_sam_score(client, db):
+    # A non-SAM source (or a SAM item not yet scored) has sam_relevance_score=None —
+    # the default filter must never treat that as "hide it," only real sources
+    # (currently only SAM.gov) that actually score low should be hidden.
+    source = _source(db)
+    _item(db, source, external_id="A", title="Unscored item", sam_relevance_score=None)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    assert [i["title"] for i in response.json()] == ["Unscored item"]
+
+
+def test_sam_relevance_tier_all_shows_everything(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Low relevance", sam_relevance_score=5)
+    db.commit()
+
+    response = client.get(
+        "/api/intelligence/items", params={"source_id": str(source.id), "sam_relevance_tier": "all"}
+    )
+
+    assert [i["title"] for i in response.json()] == ["Low relevance"]
+
+
+def test_sam_relevance_tier_highly_relevant_excludes_merely_relevant(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Highly relevant", sam_relevance_score=90)
+    _item(db, source, external_id="B", title="Just relevant", sam_relevance_score=70)
+    db.commit()
+
+    response = client.get(
+        "/api/intelligence/items", params={"source_id": str(source.id), "sam_relevance_tier": "highly_relevant"}
+    )
+
+    assert [i["title"] for i in response.json()] == ["Highly relevant"]
+
+
+def test_sort_by_sam_relevance_score(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Mid", sam_relevance_score=70, sam_relevance_rationale={})
+    _item(db, source, external_id="B", title="High", sam_relevance_score=95, sam_relevance_rationale={})
+    db.commit()
+
+    response = client.get(
+        "/api/intelligence/items",
+        params={"source_id": str(source.id), "sort_by": "sam_relevance_score", "sam_relevance_tier": "all"},
+    )
+
+    assert [i["title"] for i in response.json()] == ["High", "Mid"]
+
+
+# --- pursuit_score: joined from the latest OpportunityScore, not an IntelligenceItem column --
+
+def _score_opportunity(db, opportunity_id, score, computed_at):
+    db.add(OpportunityScore(
+        opportunity_id=opportunity_id, score=score, band="high" if score >= 75 else "medium",
+        category_scores={}, category_rationale={}, why_it_scores_highly="x", primary_concern="y",
+        computed_at=computed_at,
+    ))
+
+
+def test_sort_by_pursuit_score_uses_the_latest_score_per_opportunity(client, db):
+    opp = db.query(Opportunity).first()
+    source = _source(db)
+    promoted = _item(db, source, external_id="A", title="Promoted, well-scored", opportunity_id=opp.id)
+    _item(db, source, external_id="B", title="Never promoted")
+    # Two scores for the same opportunity, at different times — only the latest counts.
+    _score_opportunity(db, opp.id, score=40, computed_at=NOW - timedelta(days=5))
+    _score_opportunity(db, opp.id, score=91, computed_at=NOW)
+    db.commit()
+
+    response = client.get(
+        "/api/intelligence/items", params={"source_id": str(source.id), "sort_by": "pursuit_score"}
+    )
+
+    body = response.json()
+    assert [i["title"] for i in body] == ["Promoted, well-scored", "Never promoted"]  # NULLs last
+    by_title = {i["title"]: i["pursuit_score"] for i in body}
+    assert by_title["Promoted, well-scored"] == 91  # the later score, not the earlier 40
+    assert by_title["Never promoted"] is None
+
+
+def test_pursuit_score_is_populated_regardless_of_sort_by(client, db):
+    opp = db.query(Opportunity).first()
+    source = _source(db)
+    _item(db, source, external_id="A", title="Promoted", opportunity_id=opp.id)
+    _score_opportunity(db, opp.id, score=77, computed_at=NOW)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})  # default sort
+
+    assert response.json()[0]["pursuit_score"] == 77

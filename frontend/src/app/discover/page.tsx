@@ -11,11 +11,33 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LoadingState, ErrorState, EmptyState } from "@/components/ui/states";
-import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABELS } from "@/components/domain/badges";
+import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABELS, ScoreBadge } from "@/components/domain/badges";
 import { titleCase } from "@/lib/utils";
 import type { IntelligenceItem, IntelligenceCategory } from "@/types";
 
 const CATEGORIES: IntelligenceCategory[] = ["live_opportunity", "pre_solicitation", "early_signal", "award_intelligence"];
+
+// Mirrors app/services/sam_relevance_scoring.py's tier boundaries exactly — that
+// module is the source of truth (its own docstring explains the calibration); these
+// exist here only for display, never to decide what's included (the backend's default
+// sam_relevance_tier=relevant already does that before this page ever sees the data).
+const SAM_HIGHLY_RELEVANT_THRESHOLD = 80;
+const SAM_RELEVANT_THRESHOLD = 65;
+const SAM_POSSIBLE_MATCH_THRESHOLD = 50;
+
+const RELEVANCE_TIER_OPTIONS = [
+  { value: "highly_relevant", label: "Highly Relevant (80+)" },
+  { value: "relevant", label: "Relevant (65+) — default" },
+  { value: "possible_match", label: "Possible Match (50+)" },
+  { value: "all", label: "All SAM Records" },
+];
+
+function samScoreBand(score: number | null): "high" | "medium" | "low" | undefined {
+  if (score === null) return undefined;
+  if (score >= SAM_RELEVANT_THRESHOLD) return "high"; // covers both Highly Relevant and Relevant
+  if (score >= SAM_POSSIBLE_MATCH_THRESHOLD) return "medium";
+  return "low";
+}
 
 function formatDate(value: string | null): string {
   if (!value) return "—";
@@ -37,15 +59,17 @@ function DiscoverPageInner() {
   const [category, setCategory] = useState(searchParams.get("category") ?? "");
   const [state, setState] = useState("");
   const [hideSampleData, setHideSampleData] = useState(false);
+  const [relevanceTier, setRelevanceTier] = useState("relevant");
   const [sortBy, setSortBy] = useState("first_detected_at");
   const [sortDir, setSortDir] = useState("desc");
 
   const params = useMemo(
     () => ({
       q: q || undefined, category: category || undefined, state: state || undefined,
-      include_sample_data: !hideSampleData, sort_by: sortBy, sort_dir: sortDir, limit: 200,
+      include_sample_data: !hideSampleData, sam_relevance_tier: relevanceTier,
+      sort_by: sortBy, sort_dir: sortDir, limit: 200,
     }),
-    [q, category, state, hideSampleData, sortBy, sortDir]
+    [q, category, state, hideSampleData, relevanceTier, sortBy, sortDir]
   );
 
   function load() {
@@ -63,6 +87,8 @@ function DiscoverPageInner() {
           <h1 className="text-xl font-semibold text-foreground">Discover</h1>
           <p className="text-sm text-muted-foreground">
             Live opportunities, pre-solicitations, early signals, and award intelligence from every connected source.
+            SAM.gov records are broadly retrieved for auditability but only shown here at Relevant or above by
+            default — widen the Relevance filter to see Possible Matches or every SAM record fetched.
           </p>
         </div>
         <Link href="/sources">
@@ -80,6 +106,12 @@ function DiscoverPageInner() {
           </SelectContent>
         </Select>
         <Input placeholder="State (e.g. LA)" value={state} onChange={(e) => setState(e.target.value.toUpperCase())} className="w-32" maxLength={2} />
+        <Select value={relevanceTier} onValueChange={setRelevanceTier}>
+          <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
         <Select value={sortBy} onValueChange={setSortBy}>
           <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -88,6 +120,8 @@ function DiscoverPageInner() {
             <SelectItem value="estimated_value_high">Sort: Estimated Value</SelectItem>
             <SelectItem value="funding_amount">Sort: Funding Amount</SelectItem>
             <SelectItem value="early_signal_score">Sort: Early Signal Score</SelectItem>
+            <SelectItem value="sam_relevance_score">Sort: SAM Relevance Score</SelectItem>
+            <SelectItem value="pursuit_score">Sort: Principal Pursuit Score</SelectItem>
           </SelectContent>
         </Select>
         <Select value={sortDir} onValueChange={setSortDir}>
@@ -121,6 +155,7 @@ function DiscoverPageInner() {
                 <TableHead>Source</TableHead>
                 <TableHead>Key Date</TableHead>
                 <TableHead>Value / Funding</TableHead>
+                <TableHead>Relevance</TableHead>
                 <TableHead>Signal Score</TableHead>
                 <TableHead>Detected</TableHead>
               </TableRow>
@@ -142,6 +177,18 @@ function DiscoverPageInner() {
                       <div className="text-xs text-muted-foreground">
                         {[item.agency_name, item.location_city, item.location_state].filter(Boolean).join(" · ") || "—"}
                       </div>
+                      {item.sam_relevance_rationale && (
+                        <div
+                          className="mt-0.5 max-w-md truncate text-xs text-muted-foreground"
+                          title={
+                            item.sam_relevance_rationale.why_not_fit
+                              ? `${item.sam_relevance_rationale.why_relevant} ${item.sam_relevance_rationale.why_not_fit}`
+                              : item.sam_relevance_rationale.why_relevant
+                          }
+                        >
+                          {item.sam_relevance_rationale.why_relevant}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">{item.source}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">
@@ -149,6 +196,13 @@ function DiscoverPageInner() {
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {formatMoney(item.estimated_value_high ?? item.funding_amount)}
+                    </TableCell>
+                    <TableCell>
+                      {item.sam_relevance_score !== null ? (
+                        <ScoreBadge score={item.sam_relevance_score} band={samScoreBand(item.sam_relevance_score)} />
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {item.early_signal_score !== null ? `${item.early_signal_score}/100` : "—"}

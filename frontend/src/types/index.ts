@@ -577,6 +577,19 @@ export interface IntelligenceItem {
     category_rationale: Record<string, string[]>;
     disclaimer: string;
   } | null;
+  sam_relevance_score: number | null;
+  sam_relevance_rationale: {
+    tier: string;
+    components: Record<string, number>;
+    matched_positive_phrases: string[];
+    matched_negative_phrases: string[];
+    why_relevant: string;
+    why_not_fit: string | null;
+    disclaimer: string;
+  } | null;
+  // Not an IntelligenceItem column — see the backend schema's own comment. The
+  // latest Principal Pursuit Score for the Opportunity this item promoted to, if any.
+  pursuit_score: number | null;
   first_detected_at: string;
   last_seen_at: string;
   opportunity_id: string | null;

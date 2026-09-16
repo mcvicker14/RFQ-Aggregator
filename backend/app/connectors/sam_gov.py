@@ -36,21 +36,26 @@ outside the system. The API key itself is never included in any recorded diagnos
 (Principal's primary + the rest of the 541310–541380 "Architectural, Engineering, and
 Related Services" family + configured secondary codes) is queried **separately** —
 one exact `ncode` value per request, never combined — and results are merged and
-deduped by notice ID before Stage 2 scoring. This costs more requests than a single
-combined query would, but every individual request uses only documented, single-value
-syntax instead of a speculative multi-value or prefix form.
+deduped by notice ID. This costs more requests than a single combined query would, but
+every individual request uses only documented, single-value syntax instead of a
+speculative multi-value or prefix form.
 
 **Still deliberately not added**: an `active`/status request parameter — nothing
 confirms one exists or its default behavior. Staleness is instead handled from the
 proposal deadline already in the response — see `_is_expired_opportunity()`.
 
-**Two stages, per docs/PHASE2_ARCHITECTURE.md §5/§8**: Stage 1 (`fetch()`'s per-NAICS
-queries) retrieves broadly within Principal's actual practice. Stage 2
-(`_score_relevance()` / `_is_expired_opportunity()`) ranks and filters what Stage 1
-retrieved against Principal's real profile — keyword relevance, agency/region weight,
-set-aside status — so a broader Stage 1 doesn't just flood the app with a bigger
-number; results are merged across every NAICS query, scored, sorted best-first, *then*
-capped at MAX_RECORDS_PER_SYNC.
+**Production, round 3 — relevance moved out of this connector entirely.** Round 2's
+fix made retrieval actually work (355 fetched, 6 errored) — and then showed the
+predictable next problem: most of what SAM.gov's own NAICS/notice-type tagging lets
+through isn't Principal-relevant (that tagging is self-reported by the posting agency
+and often imprecise). This connector's only job now is complete, broad, auditable
+retrieval — every fetched, non-expired notice is persisted, nothing is dropped here
+for being off-topic. Scoring "is this actually worth Principal's attention" happens
+*after* persistence, on the normalized IntelligenceItem, in
+`app/services/sam_relevance_scoring.py` — see that module's docstring for why doing it
+there (not here, and not as a pre-persistence filter) is deliberate: it needs the
+normalized fields, it must never delete a source record for scoring low, and Discover
+needs the score to build a default view, not just this connector's own output order.
 
 Parsing stays defensive (every field read with `.get()`) and unmapped notices are
 logged rather than silently dropped. See docs/DATA_INGESTION.md.
@@ -69,12 +74,12 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 BASE_URL = "https://api.sam.gov/prod/opportunities/v2/search"
-MAX_RECORDS_PER_SYNC = 500  # cap on IntelligenceItems one sync returns, post-scoring
-# Cap on raw SAM.gov notices paged through and scored before selecting the top
-# MAX_RECORDS_PER_SYNC — bounds one sync's SAM.gov call volume even though Stage 1's
-# broader NAICS-family/notice-type filter can match more than 500 notices in a
-# 30-day window, now that it isn't artificially narrowed to a handful of exact codes.
-MAX_CANDIDATES_TO_SCORE = 1500
+MAX_RECORDS_PER_SYNC = 500  # cap on IntelligenceItems one sync returns
+# Cap on raw SAM.gov notices paged through and deduped before selecting the first
+# MAX_RECORDS_PER_SYNC — bounds one sync's SAM.gov call volume even though the broad
+# NAICS-family/notice-type retrieval can match more than 500 notices in a 30-day
+# window, now that it isn't artificially narrowed to a handful of exact codes.
+MAX_CANDIDATES_TO_COLLECT = 1500
 PAGE_SIZE = 100
 
 # The "Architectural, Engineering, and Related Services" NAICS family — Principal's
@@ -104,39 +109,6 @@ NOTICE_TYPE_CODES = ["o", "p", "k", "r", "s", "a"]
 # (possibly much narrower) since — a narrow probe window could itself explain a zero
 # and produce a misleading diagnosis. The API's documented max span is exactly 365 days.
 DIAGNOSTIC_PROBE_WINDOW_DAYS = 365
-
-# --- Stage 2: Principal relevance scoring ------------------------------------------
-#
-# Stage 1's NAICS/notice-type filter narrows the fetch to the right ballpark
-# server-side, but membership in that ballpark isn't the same as "Principal should
-# care about this" — SAM.gov's NAICS field is self-reported by the posting agency and
-# often imprecise, so a small drafting task order and an unrelated multi-billion-dollar
-# award can both carry the same code. This ranks/filters what Stage 1 retrieved against
-# Principal's real profile — civil/water/wastewater/stormwater/utilities/roads/
-# transportation/survey/CA/A-E — rather than treating "matched the NAICS filter" as
-# the whole answer.
-_POSITIVE_KEYWORDS: list[str] = [
-    "engineering services", "architect-engineer", "a-e services", "a/e services",
-    "civil engineering", "water", "wastewater", "sewer", "stormwater", "drainage",
-    "utilities", "utility replacement", "water main", "sewer main", "lift station",
-    "pump station", "treatment plant", "roadway", "transportation", "site civil",
-    "survey", "construction administration", "idiq", "matoc", "satoc", "design services",
-]
-
-# Agencies where Principal has an established or strategically valuable relationship.
-_WEIGHTED_AGENCY_KEYWORDS: list[str] = [
-    "veterans affairs", "army corps of engineers", "usace", "air force",
-    "department of defense", "federal emergency management", "fema",
-    "natural resources conservation", "nrcs",
-]
-
-_GULF_COAST_SOUTHEAST_STATES = {"LA", "TX", "MS", "AL", "FL", "GA"}
-
-# Calibrated against test fixtures, not arbitrary: NAICS-family membership alone
-# (already guaranteed by Stage 1's query) clears this on its own, so the floor mainly
-# catches the rare notice that matched the NAICS filter on a technicality but shows no
-# other sign of relevance at all — it isn't meant to be a hard gate on top of Stage 1.
-MIN_RELEVANCE_SCORE = 2
 
 # Best-known mapping of SAM.gov's typeOfSetAsideDescription free text to our enum.
 # Matched by substring, case-insensitive, most-specific first.
@@ -212,38 +184,6 @@ def _extract_place_of_performance(item: dict) -> tuple[str | None, str | None]:
     if isinstance(place_of_performance.get("city"), dict):
         city = place_of_performance["city"].get("name")
     return city or office_address.get("city"), state or office_address.get("state")
-
-
-def _score_relevance(item: dict) -> int:
-    """Higher means more relevant to Principal's actual A/E practice. Used to (a) drop
-    the rare notice that only matched Stage 1's NAICS/notice-type filter on a
-    technicality (see MIN_RELEVANCE_SCORE) and (b) sort kept results so the strongest
-    matches survive the MAX_RECORDS_PER_SYNC cap first, rather than whichever page of
-    the SAM.gov response happened to load first."""
-    text = " ".join(str(item.get(key) or "") for key in ("title", "description", "additionalInfoText")).lower()
-    score = sum(2 for keyword in _POSITIVE_KEYWORDS if keyword in text)
-
-    naics = (item.get("naicsCode") or "").strip()
-    if naics.startswith("5413"):
-        score += 3
-    elif naics in settings.PRINCIPAL_SECONDARY_NAICS:
-        score += 2
-
-    agency_path = (item.get("fullParentPathName") or "").lower()
-    if any(keyword in agency_path for keyword in _WEIGHTED_AGENCY_KEYWORDS):
-        score += 2
-
-    _, state = _extract_place_of_performance(item)
-    if state in _GULF_COAST_SOUTHEAST_STATES:
-        score += 1
-
-    set_aside = (item.get("typeOfSetAsideDescription") or "").lower()
-    if "service-disabled veteran" in set_aside or "sdvosb" in set_aside:
-        score += 2
-    elif "small business" in set_aside:
-        score += 1
-
-    return score
 
 
 def _is_expired_opportunity(raw: RawIntelligenceItem) -> bool:
@@ -348,7 +288,7 @@ class SamGovConnector(IntelligenceConnector):
 
         # Keyed by external_id so the same notice matching more than one NAICS query
         # (e.g. a multi-disciplinary IDIQ) is merged, not duplicated.
-        candidates: dict[str, tuple[int, RawIntelligenceItem]] = {}
+        candidates: dict[str, RawIntelligenceItem] = {}
         total_records_by_naics: dict[str, int] = {}
         pages_fetched = 0
         retrieved_at = datetime.now(timezone.utc)
@@ -357,7 +297,7 @@ class SamGovConnector(IntelligenceConnector):
             probes = _run_diagnostic_probes(client)
 
             for naics_code in naics_codes:
-                if len(candidates) >= MAX_CANDIDATES_TO_SCORE:
+                if len(candidates) >= MAX_CANDIDATES_TO_COLLECT:
                     break
                 naics_total_across_windows = 0
                 for window_start, window_end in windows:
@@ -366,7 +306,7 @@ class SamGovConnector(IntelligenceConnector):
                     while True:
                         params = {
                             "api_key": settings.SAM_GOV_API_KEY,
-                            "limit": min(PAGE_SIZE, MAX_CANDIDATES_TO_SCORE - len(candidates)),
+                            "limit": min(PAGE_SIZE, MAX_CANDIDATES_TO_COLLECT - len(candidates)),
                             "offset": offset,
                             "postedFrom": window_start.strftime("%m/%d/%Y"),
                             "postedTo": window_end.strftime("%m/%d/%Y"),
@@ -399,24 +339,24 @@ class SamGovConnector(IntelligenceConnector):
                                 continue
                             if _is_expired_opportunity(raw):
                                 continue
-                            score = _score_relevance(item)
-                            if score < MIN_RELEVANCE_SCORE:
-                                continue
-                            candidates[raw.external_id] = (score, raw)
+                            # No relevance filtering here — every fetched, non-expired
+                            # notice is kept for intelligence/auditability. See module
+                            # docstring: relevance scoring happens after persistence.
+                            candidates[raw.external_id] = raw
 
                         offset += len(items)
-                        if not items or offset >= window_total or len(candidates) >= MAX_CANDIDATES_TO_SCORE:
+                        if not items or offset >= window_total or len(candidates) >= MAX_CANDIDATES_TO_COLLECT:
                             break
 
                     naics_total_across_windows += window_total
-                    if len(candidates) >= MAX_CANDIDATES_TO_SCORE:
+                    if len(candidates) >= MAX_CANDIDATES_TO_COLLECT:
                         break
                 total_records_by_naics[naics_code] = naics_total_across_windows
 
-        # Stage 2: best matches first, then cap — so a broader Stage 1 means better
-        # results, not just a bigger unranked pile capped in arrival order.
-        ranked = sorted(candidates.values(), key=lambda pair: pair[0], reverse=True)
-        kept = [raw for _, raw in ranked[:limit]]
+        # Simple arrival-order cap (primary NAICS 541330 is queried first, so it's
+        # naturally prioritized if this cap is ever actually hit) — no relevance
+        # ranking here; that happens after persistence, per the module docstring.
+        kept = list(candidates.values())[:limit]
 
         self.last_run_diagnostics = {
             "probes": probes,
@@ -426,8 +366,8 @@ class SamGovConnector(IntelligenceConnector):
                 "notice_type_codes": NOTICE_TYPE_CODES,
                 "total_records_by_naics": total_records_by_naics,
                 "pages_fetched": pages_fetched,
-                "candidates_before_relevance_filter": len(candidates),
-                "records_after_relevance_filter": len(kept),
+                "candidates_collected": len(candidates),
+                "records_returned": len(kept),
             },
         }
         return kept

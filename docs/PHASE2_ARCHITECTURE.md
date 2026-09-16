@@ -404,6 +404,51 @@ procurement at all**":
 0–100 score + low/medium/high band, same shape as the Pursuit Score's output, so the
 frontend can reuse the same score-badge component for both.
 
+## 10a. SAM Relevance Score
+
+A third, separate engine (`app/services/sam_relevance_scoring.py`), added after a
+production incident: fixing SAM.gov's retrieval (broad NAICS-family + all-notice-type
+querying — see §5/§8's connector notes) made a live sync return 355 records, and most
+of them weren't Principal-relevant — SAM.gov's own NAICS/notice-type tagging is
+self-reported by the posting agency and often imprecise. This score answers a third,
+different question from the other two: not "how likely to become a procurement"
+(Early Signal Score) or "how good a fit once it's a tracked pursuit" (Pursuit Score),
+but "**is this SAM.gov notice even worth putting in front of Principal at all**."
+
+- **Populated only for `source == "SAM.gov"`** — every other source's items have
+  `sam_relevance_score = NULL` and are never filtered by it (see below).
+- **Computed after persistence, not as a retrieval filter.** SAM.gov's connector keeps
+  every fetched, non-expired notice for intelligence/auditability (§5/§8) — nothing is
+  dropped at fetch time for being off-topic. `intelligence_sync.run_sync()` calls
+  `calculate_sam_relevance_score()` right after upsert, *before*
+  `promote_intelligence_item()`, so promotion can consult the result.
+- **Gates promotion, not just visibility.** A SAM item scored below `RELEVANT_THRESHOLD`
+  (65) is never promoted into a real `Opportunity` — see `promote_intelligence_item()`'s
+  own docstring. This keeps Pipeline/Dashboard/Go-No-Go from being flooded the same way
+  Discover would be; the `IntelligenceItem` itself is never deleted, only left
+  unpromoted, and a human can still find it via Discover's "All SAM Records" filter.
+- **Components**: phrase-matched content relevance (title/description against
+  Principal's positive/negative phrase lists, capped so no single generic word
+  carries a record), NAICS (541330 strongest, a related-discipline set modest, no
+  sector-level "54" credit at all), agency tier (VA/USACE highest, Air Force/DoD/
+  FEMA/NRCS strong — deliberately small point values, since none of these may decide
+  relevance alone), Gulf Coast/Southeast/Mississippi Valley geography, a Sources
+  Sought/Presolicitation strategic-positioning bonus, and a set-aside bonus that's
+  gated behind already-established content/NAICS relevance (an SDVOSB set-aside on an
+  obviously unrelated procurement must not be rescued into relevance).
+- **Tiers**: 80–100 Highly Relevant, 65–79 Relevant (together, "the default Discover
+  view"), 50–64 Possible Match (behind an explicit filter), below 50 Low Relevance
+  (kept for provenance, never shown by default). `HIGHLY_RELEVANT_THRESHOLD`/
+  `RELEVANT_THRESHOLD`/`POSSIBLE_MATCH_THRESHOLD` in `sam_relevance_scoring.py` are the
+  single source of truth every caller (the promotion gate, the Discover API's default
+  filter, the dashboard's intelligence counts) imports rather than re-deriving.
+- **Explanation, not just a number**: `sam_relevance_rationale` (JSONB) carries a
+  component breakdown plus two generated sentences — `why_relevant` (which matched
+  keywords/agency/NAICS/set-aside drove the score) and `why_not_fit` (a matched
+  negative phrase, a related-not-primary NAICS possibly needing a teaming partner, or
+  a general "limited signal, worth a manual check" caveat — `None` when there's no
+  meaningful caveat). Template-based, like the other two engines — no LLM call.
+
 ## 11. API and frontend surface
 
 **New backend routes**: `intelligence_sources.py` (registry CRUD for admins + sync
