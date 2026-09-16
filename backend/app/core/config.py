@@ -6,6 +6,7 @@ with a placeholder. See docs/SECURITY.md.
 """
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +20,20 @@ class Settings(BaseSettings):
         "postgresql+psycopg://principal_oi_app:dev_local_only_pw_change_me"
         "@localhost:5432/principal_oi"
     )
+
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def _use_psycopg3_driver(cls, value: str) -> str:
+        """Managed Postgres providers (Render, Railway, etc.) hand out a bare
+        postgres:// or postgresql:// connection string. SQLAlchemy needs the
+        +psycopg driver suffix to use psycopg3 (what's actually installed — see
+        requirements.txt). Normalizing here means a hosting provider's connection
+        string can be pasted in as-is, with no manual editing required."""
+        if value.startswith("postgres://"):
+            return "postgresql+psycopg://" + value[len("postgres://"):]
+        if value.startswith("postgresql://"):
+            return "postgresql+psycopg://" + value[len("postgresql://"):]
+        return value
 
     # JWT auth
     JWT_SECRET_KEY: str = "INSECURE-DEV-ONLY-CHANGE-ME"

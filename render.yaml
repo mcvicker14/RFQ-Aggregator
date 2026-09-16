@@ -1,0 +1,72 @@
+# Render Blueprint — deploys the whole application (database + backend + frontend)
+# from this one file. See docs/DEPLOYMENT.md for the full walkthrough of using it.
+#
+# Fields marked `sync: false` are intentionally left for a human to fill in via the
+# Render dashboard — Render never asks Claude/this repo for their values, and they
+# are never written to git. See docs/SECURITY.md.
+
+databases:
+  - name: principal-oi-db
+    plan: free
+    databaseName: principal_oi
+    user: principal_oi_app
+
+services:
+  - type: web
+    name: principal-oi-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    envVars:
+      - key: ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: principal-oi-db
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "720"
+      # Set this once the frontend service below is live and you have its URL —
+      # see docs/DEPLOYMENT.md step 5. Not required for the app to function (the
+      # browser only ever talks to the frontend's own domain), only tightens CORS.
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: UPLOAD_DIR
+        value: ./uploads
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "25"
+      # Your own login — set these to whatever you want your email/password to be.
+      # Only you will ever know the password; it is never sent to Claude or GitHub.
+      - key: ADMIN_INITIAL_EMAIL
+        sync: false
+      - key: ADMIN_INITIAL_NAME
+        sync: false
+      - key: ADMIN_INITIAL_PASSWORD
+        sync: false
+      # Optional integrations — leave blank to keep them off (the app says so
+      # plainly in the UI); fill in later without redeploying code.
+      - key: SAM_GOV_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-5
+
+  - type: web
+    name: principal-oi-web
+    runtime: docker
+    plan: free
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    envVars:
+      # Set this to the principal-oi-api service's URL once it's live — see
+      # docs/DEPLOYMENT.md step 5. Required for the app to work: this is how the
+      # web app reaches the backend.
+      - key: BACKEND_URL
+        sync: false

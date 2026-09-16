@@ -154,17 +154,28 @@ Source" affordance. See `docs/DATA_INGESTION.md` §Provenance.
 See `docs/SECURITY.md` for the full model: authentication, RBAC, secret handling,
 upload validation, and what is explicitly deferred (SSO).
 
-## 7. Deployment shape (target, not exercised in this sandbox)
+## 7. Deployment shape
 
-- **Database:** managed PostgreSQL (Azure Database for PostgreSQL, AWS RDS, etc.)
-- **Backend:** containerized FastAPI app (Dockerfile included) behind HTTPS
-- **Frontend:** containerized Next.js app, or Vercel
-- **File storage:** local disk by default (dev); the `StorageBackend` interface in
+**Production:** Render, via the `render.yaml` Blueprint at the repo root — one
+managed Postgres instance, the backend as a Docker web service, the frontend as a
+Docker web service. Chosen for being the least manual-setup path to all three pieces
+under one account with automatic HTTPS, starting on a no-credit-card free tier. Full
+walkthrough (written for a non-technical reader): `docs/DEPLOYMENT.md`. Both
+Dockerfiles read the `PORT` environment variable Render assigns dynamically rather
+than a hardcoded port, and `DATABASE_URL` is normalized in `app/core/config.py` to
+tolerate the bare `postgres://`/`postgresql://` connection strings managed providers
+hand out (SQLAlchemy needs the `+psycopg` driver suffix).
+
+- **File storage:** local disk by default; the `StorageBackend` interface in
   `backend/app/services/storage.py` has a second implementation point for S3/Azure Blob
-  — swapping it in is a config change, not a rewrite.
+  — swapping it in is a config change, not a rewrite. On Render's free/standard web
+  services this disk is ephemeral (wiped on redeploy) — see `docs/DEPLOYMENT.md`'s
+  free-tier limitations. Render's paid Persistent Disks add-on or object storage would
+  fix this; neither is wired up yet.
 - **docker-compose.yml** at the repo root runs Postgres + backend + frontend together
-  for local development. This sandbox does not have a Docker daemon available, so the
-  compose file was written to mirror the exact configuration that *was* validated by
-  running Postgres, the backend, and the frontend directly — but the compose path
+  for self-hosting outside Render (e.g. a VPS). This sandbox never had a Docker daemon
+  available to exercise it directly — the compose file mirrors the configuration that
+  *was* validated by running Postgres, the backend, and the frontend directly, and
+  separately mirrors the same Dockerfiles Render builds from, but the compose path
   itself has not been executed end-to-end. Note this before relying on it for a first
   deployment.

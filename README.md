@@ -62,12 +62,19 @@ in the interface — it never fakes a result.
 Both are added to a configuration file (`backend/.env`) that is never uploaded to
 GitHub — see **Keeping secrets safe** below.
 
-## Seeing it running
+## Using it on the web
 
-There's a technical setup guide below for whoever is hosting/running this day to
-day. In short, the application has three parts that all need to be running at the
-same time: a database, a backend, and a frontend (the part you actually look at in a
-browser).
+The application is meant to be hosted somewhere permanent so it's reachable from an
+ordinary browser, any time — see **`docs/DEPLOYMENT.md`** for the step-by-step guide
+(written for a non-technical reader) to putting it on Render, a hosting provider with
+a free tier that needs no credit card to start.
+
+## Running it yourself, locally
+
+The rest of this section is a technical setup guide for whoever is hosting/running
+this day to day, or for testing changes before they go live. In short, the
+application has three parts that all need to be running at the same time: a
+database, a backend, and a frontend (the part you actually look at in a browser).
 
 ### Quick start (for a developer setting this up)
 
@@ -115,20 +122,9 @@ The two folders `rfq_aggregator_starter/` and `rfq_program/` are earlier
 placeholder scaffolding that predates this build; they're left as-is and are not
 part of the running application.
 
-## Important note on this repository's current state
-
-While this was being built, **pushing to GitHub was blocked** — Claude did not have
-write access to this repository (the error was "Claude doesn't have GitHub access to
-mcvicker14/RFQ-Aggregator"). All the work described in this README is committed to
-git locally, inside the development environment, but as of this writing it had not
-yet reached GitHub. To fix this: either have an organization admin install the
-Claude GitHub App
-([github.com/apps/claude](https://github.com/apps/claude/installations/select_target))
-with access to this repository, or reconnect GitHub under Claude's connector
-settings. Once that's resolved, the commits are ready to push.
-
 ## Questions this project's docs answer
 
+- **How do I put this on the web?** `docs/DEPLOYMENT.md`
 - **How is it built, and why?** `docs/ARCHITECTURE.md`
 - **What does the database look like?** `docs/DATABASE_SCHEMA.md`
 - **How does the 0–100 score work?** `docs/SCORING_METHODOLOGY.md`
