@@ -35,6 +35,7 @@ from app.models.opportunity import Opportunity, OpportunitySource
 from app.models.pipeline import PipelineStage
 from app.services.activities import log_activity
 from app.services.dedup import find_and_cluster_candidates
+from app.services.early_signal_scoring import calculate_early_signal_score
 from app.services.scoring import calculate_score
 
 logger = logging.getLogger(__name__)
@@ -278,6 +279,7 @@ def run_sync(
         try:
             item, was_created = _upsert_intelligence_item(db, source, raw)
             promote_intelligence_item(db, item)
+            calculate_early_signal_score(db, item)
             find_and_cluster_candidates(db, item)
             db.commit()
             created += was_created

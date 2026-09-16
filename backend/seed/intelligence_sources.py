@@ -329,7 +329,8 @@ def seed_intelligence_sources(db: Session) -> None:
 
         existing = db.execute(select(IntelligenceSource).where(IntelligenceSource.name == entry["name"])).scalars().first()
         if existing is None:
-            db.add(IntelligenceSource(is_enabled=(entry["connector_key"] == "sam_gov"), **entry))
+            is_working_connector = entry["connector_key"] in ("sam_gov", "usaspending", "grants_gov")
+            db.add(IntelligenceSource(is_enabled=is_working_connector, **entry))
         else:
             for field_name in _UPDATE_ON_RESEED:
                 setattr(existing, field_name, entry.get(field_name))
