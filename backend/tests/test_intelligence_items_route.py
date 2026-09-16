@@ -120,6 +120,44 @@ def test_unpromoted_only_filter_excludes_items_linked_to_an_opportunity(client, 
     assert titles == ["Not yet promoted"]
 
 
+def test_source_id_filter_shows_only_that_sources_items(client, db):
+    source_a = _source(db, name="Source Filter Test A")
+    source_b = _source(db, name="Source Filter Test B")
+    _item(db, source_a, external_id="A1", title="From source A")
+    _item(db, source_b, external_id="B1", title="From source B")
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source_a.id)})
+
+    assert [i["title"] for i in response.json()] == ["From source A"]
+
+
+def test_source_id_filter_combines_with_grants_relevance_tier_and_sort(client, db):
+    # Exactly the combination requested: Source = one source, Relevance tier active,
+    # sorted by Grant Engineering Relevance Score -- proves the three controls work
+    # together rather than fighting each other.
+    grants_source = _source(db, name="Source Filter Test Grants")
+    other_source = _source(db, name="Source Filter Test Other")
+    _item(db, grants_source, external_id="G1", title="Grants high", grants_relevance_score=90,
+          intelligence_category=IntelligenceCategory.EARLY_SIGNAL)
+    _item(db, grants_source, external_id="G2", title="Grants low", grants_relevance_score=20,
+          intelligence_category=IntelligenceCategory.EARLY_SIGNAL)
+    # Same high score, but a different source -- must never leak into a source_id-scoped view.
+    _item(db, other_source, external_id="O1", title="Other source high", grants_relevance_score=90,
+          intelligence_category=IntelligenceCategory.EARLY_SIGNAL)
+    db.commit()
+
+    response = client.get(
+        "/api/intelligence/items",
+        params={
+            "source_id": str(grants_source.id), "grants_relevance_tier": "relevant_signal",
+            "sort_by": "grants_relevance_score", "sort_dir": "desc",
+        },
+    )
+
+    assert [i["title"] for i in response.json()] == ["Grants high"]
+
+
 # --- sam_relevance_tier: the default-view filter -------------------------------------
 
 def test_default_sam_relevance_tier_hides_low_scoring_sam_items(client, db):

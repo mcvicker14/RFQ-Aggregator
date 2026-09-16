@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Radar, ExternalLink } from "lucide-react";
-import { intelligenceItemsApi } from "@/lib/api/resources";
+import { intelligenceApi, intelligenceItemsApi } from "@/lib/api/resources";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { LoadingState, ErrorState, EmptyState } from "@/components/ui/states";
 import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABELS, ScoreBadge } from "@/components/domain/badges";
 import { titleCase } from "@/lib/utils";
-import type { IntelligenceItem, IntelligenceCategory } from "@/types";
+import type { IntelligenceItem, IntelligenceCategory, IntelligenceSource } from "@/types";
 
 const CATEGORIES: IntelligenceCategory[] = ["live_opportunity", "pre_solicitation", "early_signal", "award_intelligence"];
 
@@ -62,9 +62,11 @@ function DiscoverPageInner() {
   const searchParams = useSearchParams();
   const [items, setItems] = useState<IntelligenceItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sources, setSources] = useState<IntelligenceSource[]>([]);
 
   const [q, setQ] = useState("");
   const [category, setCategory] = useState(searchParams.get("category") ?? "");
+  const [sourceId, setSourceId] = useState("");
   const [state, setState] = useState("");
   const [hideSampleData, setHideSampleData] = useState(false);
   const [samRelevanceTier, setSamRelevanceTier] = useState("relevant");
@@ -72,13 +74,22 @@ function DiscoverPageInner() {
   const [sortBy, setSortBy] = useState("first_detected_at");
   const [sortDir, setSortDir] = useState("desc");
 
+  // Populates the Source filter dynamically — any enabled Source Registry row shows up
+  // automatically, not just SAM.gov/Grants.gov/USAspending.gov, so a future connector
+  // never needs a matching frontend change here.
+  useEffect(() => {
+    intelligenceApi.listSources().then((all) =>
+      setSources(all.filter((s) => s.is_enabled).sort((a, b) => a.name.localeCompare(b.name)))
+    );
+  }, []);
+
   const params = useMemo(
     () => ({
-      q: q || undefined, category: category || undefined, state: state || undefined,
-      include_sample_data: !hideSampleData, sam_relevance_tier: samRelevanceTier,
+      q: q || undefined, category: category || undefined, source_id: sourceId || undefined,
+      state: state || undefined, include_sample_data: !hideSampleData, sam_relevance_tier: samRelevanceTier,
       grants_relevance_tier: grantsRelevanceTier, sort_by: sortBy, sort_dir: sortDir, limit: 200,
     }),
-    [q, category, state, hideSampleData, samRelevanceTier, grantsRelevanceTier, sortBy, sortDir]
+    [q, category, sourceId, state, hideSampleData, samRelevanceTier, grantsRelevanceTier, sortBy, sortDir]
   );
 
   function load() {
@@ -114,6 +125,13 @@ function DiscoverPageInner() {
           <SelectContent>
             <SelectItem value="all">All categories</SelectItem>
             {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{INTELLIGENCE_CATEGORY_LABELS[c]}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={sourceId || "all"} onValueChange={(v) => setSourceId(v === "all" ? "" : v)}>
+          <SelectTrigger className="w-48"><SelectValue placeholder="Source" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Sources</SelectItem>
+            {sources.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
           </SelectContent>
         </Select>
         <Input placeholder="State (e.g. LA)" value={state} onChange={(e) => setState(e.target.value.toUpperCase())} className="w-32" maxLength={2} />
