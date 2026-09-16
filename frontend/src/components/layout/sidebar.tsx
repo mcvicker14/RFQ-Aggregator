@@ -92,9 +92,13 @@ export function Sidebar() {
   return (
     <aside className="hidden w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
       <div className="flex h-16 items-center gap-2.5 border-b border-sidebar-border px-4">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-sidebar-accent text-sm font-bold text-primary">
-          P
-        </span>
+        <img
+          src="/assets/logo/principal-engineering-mark.png"
+          alt="Principal Engineering"
+          width={558}
+          height={557}
+          className="h-9 w-9 shrink-0 object-contain"
+        />
         <div className="min-w-0 leading-tight">
           <div className="truncate text-sm font-semibold text-sidebar-foreground">Principal</div>
           <div className="truncate text-[10px] uppercase tracking-wide text-sidebar-muted-foreground">

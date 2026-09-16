@@ -32,9 +32,13 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-secondary/50 px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center pb-2 pt-8 text-center">
-          <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-primary text-lg font-bold text-primary-foreground">
-            P
-          </span>
+          <img
+            src="/assets/logo/principal-engineering-logo.png"
+            alt="Principal Engineering"
+            width={1975}
+            height={557}
+            className="mb-4 h-auto w-[260px] object-contain"
+          />
           <CardTitle className="text-lg">Principal Opportunity Intelligence</CardTitle>
           <CardDescription>Find Earlier. Pursue Smarter. Win More.</CardDescription>
         </CardHeader>
