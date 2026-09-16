@@ -11,20 +11,11 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LoadingState, ErrorState, EmptyState } from "@/components/ui/states";
-import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABELS, ScoreBadge } from "@/components/domain/badges";
+import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABELS, RelevanceTierBadge } from "@/components/domain/badges";
 import { titleCase } from "@/lib/utils";
 import type { IntelligenceItem, IntelligenceCategory, IntelligenceSource } from "@/types";
 
 const CATEGORIES: IntelligenceCategory[] = ["live_opportunity", "pre_solicitation", "early_signal", "award_intelligence"];
-
-// Mirrors app/services/sam_relevance_scoring.py's and grants_relevance_scoring.py's
-// tier boundaries exactly — both modules use the identical 80/65/50 numeric bands (by
-// deliberate design, for a consistent mental model, even though the two scores measure
-// different things) and are the source of truth; these exist here only for display,
-// never to decide what's included (the backend's own defaults already do that before
-// this page ever sees the data).
-const RELEVANT_THRESHOLD = 65;
-const POSSIBLE_THRESHOLD = 50;
 
 const SAM_RELEVANCE_TIER_OPTIONS = [
   { value: "highly_relevant", label: "SAM: Highly Relevant (80+)" },
@@ -39,13 +30,6 @@ const GRANTS_RELEVANCE_TIER_OPTIONS = [
   { value: "possible_signal", label: "Grants: Possible Signal (50+)" },
   { value: "all", label: "Grants: All Records" },
 ];
-
-function relevanceScoreBand(score: number | null): "high" | "medium" | "low" | undefined {
-  if (score === null) return undefined;
-  if (score >= RELEVANT_THRESHOLD) return "high"; // covers both Highly Relevant/High-Value and Relevant
-  if (score >= POSSIBLE_THRESHOLD) return "medium";
-  return "low";
-}
 
 function formatDate(value: string | null): string {
   if (!value) return "—";
@@ -118,8 +102,8 @@ function DiscoverPageInner() {
         </Link>
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <Input placeholder="Search title, agency, location…" value={q} onChange={(e) => setQ(e.target.value)} className="max-w-xs" />
+      <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-secondary/40 p-2.5">
+        <Input placeholder="Search title, agency, location…" value={q} onChange={(e) => setQ(e.target.value)} className="max-w-xs bg-card" />
         <Select value={category || "all"} onValueChange={(v) => setCategory(v === "all" ? "" : v)}>
           <SelectTrigger className="w-48"><SelectValue placeholder="Category" /></SelectTrigger>
           <SelectContent>
@@ -243,21 +227,23 @@ function DiscoverPageInner() {
                     <TableCell>
                       {(() => {
                         // Mutually exclusive in practice — an item comes from exactly one
-                        // source, so at most one of these is ever non-null. Each is
-                        // labeled explicitly (not just a bare number) so it's never
-                        // confused with the separate Signal Score column, and so sorting
-                        // by "Grant Engineering Relevance Score" has a visibly labeled
-                        // column to confirm the order actually changed against.
+                        // source, so at most one of these is ever non-null. The tier name
+                        // (Highly Relevant / Relevant / etc.) is printed directly on the
+                        // badge via RelevanceTierBadge, so a reader never has to mentally
+                        // map a bare number to what it means, and the source label above
+                        // it keeps this unmistakably separate from the Signal Score column.
                         if (item.grants_relevance_score !== null) {
                           return (
                             <div
-                              className="flex items-center gap-1.5"
+                              className="flex flex-col items-start gap-1"
                               title="Grant Engineering Relevance Score — could this plausibly lead to engineering work for Principal?"
                             >
-                              <span className="text-xs text-muted-foreground">Grant Relevance:</span>
-                              <ScoreBadge
+                              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                Grant Relevance
+                              </span>
+                              <RelevanceTierBadge
+                                tier={item.grants_relevance_rationale?.tier ?? "unscored"}
                                 score={item.grants_relevance_score}
-                                band={relevanceScoreBand(item.grants_relevance_score)}
                               />
                             </div>
                           );
@@ -265,13 +251,15 @@ function DiscoverPageInner() {
                         if (item.sam_relevance_score !== null) {
                           return (
                             <div
-                              className="flex items-center gap-1.5"
+                              className="flex flex-col items-start gap-1"
                               title="SAM Relevance Score — is this SAM.gov notice even worth Principal's attention?"
                             >
-                              <span className="text-xs text-muted-foreground">SAM Relevance:</span>
-                              <ScoreBadge
+                              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                SAM Relevance
+                              </span>
+                              <RelevanceTierBadge
+                                tier={item.sam_relevance_rationale?.tier ?? "unscored"}
                                 score={item.sam_relevance_score}
-                                band={relevanceScoreBand(item.sam_relevance_score)}
                               />
                             </div>
                           );

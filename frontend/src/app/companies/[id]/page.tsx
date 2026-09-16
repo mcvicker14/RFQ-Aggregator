@@ -48,7 +48,7 @@ export default function CompanyDetailPage() {
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           <Badge variant="outline">{titleCase(company.company_type)}</Badge>
-          {tags.map((t) => <Badge key={t} variant="accent">{t}</Badge>)}
+          {tags.map((t) => <Badge key={t} variant="secondary">{t}</Badge>)}
         </div>
       </div>
 

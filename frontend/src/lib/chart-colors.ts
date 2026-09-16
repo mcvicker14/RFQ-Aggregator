@@ -26,6 +26,9 @@ export function colorForLabel(label: string): string {
   return CATEGORICAL_LIGHT[hashString(label) % CATEGORICAL_LIGHT.length];
 }
 
-export const CHART_GRID = "#e1e0d9";
-export const CHART_AXIS = "#898781";
-export const CHART_INK_SECONDARY = "#52514e";
+// Chart chrome (grid/axis) references the live theme tokens directly, so it always
+// matches the rest of the UI — unlike the fixed categorical palette above, which is
+// deliberately brand-independent (see its own comment).
+export const CHART_GRID = "hsl(var(--border))";
+export const CHART_AXIS = "hsl(var(--muted-foreground))";
+export const CHART_INK_SECONDARY = "hsl(var(--foreground))";

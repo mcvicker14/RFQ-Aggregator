@@ -65,7 +65,7 @@ export default function ForecastPage() {
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <KpiCard label="Total Pipeline" value={formatCurrency(data.total_pipeline, { compact: true })} icon={DollarSign} />
-        <KpiCard label="Weighted Pipeline" value={formatCurrency(data.weighted_pipeline, { compact: true })} icon={TrendingUp} tone="accent" />
+        <KpiCard label="Weighted Pipeline" value={formatCurrency(data.weighted_pipeline, { compact: true })} icon={TrendingUp} />
         <KpiCard label="Committed Revenue" value={formatCurrency(data.committed_revenue, { compact: true })} icon={Target} tone="success" />
         <KpiCard label="Target Revenue" value={formatCurrency(data.target_revenue, { compact: true })} icon={Target} />
         <KpiCard label="Revenue Gap" value={formatCurrency(data.revenue_gap, { compact: true })} icon={TrendingDown} tone={data.revenue_gap > 0 ? "warning" : "success"} />

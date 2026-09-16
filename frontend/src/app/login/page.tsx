@@ -29,9 +29,12 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="flex min-h-screen items-center justify-center bg-secondary/50 px-4">
       <Card className="w-full max-w-sm">
-        <CardHeader className="items-center text-center">
+        <CardHeader className="items-center pb-2 pt-8 text-center">
+          <span className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-primary text-lg font-bold text-primary-foreground">
+            P
+          </span>
           <CardTitle className="text-lg">Principal Opportunity Intelligence</CardTitle>
           <CardDescription>Find Earlier. Pursue Smarter. Win More.</CardDescription>
         </CardHeader>

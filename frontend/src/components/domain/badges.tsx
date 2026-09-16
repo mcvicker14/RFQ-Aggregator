@@ -2,6 +2,14 @@ import { Badge } from "@/components/ui/badge";
 import { cn, titleCase } from "@/lib/utils";
 import { FlaskConical } from "lucide-react";
 
+// Badge tone system, used consistently across every domain badge in this file:
+//   success  — favorable / live / positive status
+//   warning  — needs attention / in progress / moderate confidence
+//   destructive — negative / expired / rejected
+//   accent (gold) — reserved for the single most important signal in a given context
+//                    (see each component below for exactly where and why)
+//   secondary / outline / muted — everything else; the default, most common tone
+
 export function ScoreBadge({ score, band, size = "default" }: { score: number | null; band?: string | null; size?: "default" | "lg" }) {
   if (score === null) {
     return <Badge variant="muted">Not scored</Badge>;
@@ -19,9 +27,50 @@ export function ScoreBadge({ score, band, size = "default" }: { score: number | 
   );
 }
 
-export function SampleDataBadge({ className }: { className?: string }) {
+// Relevance tier badges (SAM Relevance Score, Grant Engineering Relevance Score): the
+// single place score *meaning*, not just a color, is standardized. Named so a reader
+// never has to mentally map "81" to a tier — the tier name is printed on the badge.
+// Gold is used exactly once here, for the top tier only ("key score accents" — the
+// spec's own words) — Relevant/Possible Match/Low Relevance deliberately are not gold,
+// so the top tier still reads as genuinely special rather than one of several gold badges.
+const RELEVANCE_TIER_LABELS: Record<string, string> = {
+  highly_relevant: "Highly Relevant",
+  relevant: "Relevant",
+  possible_match: "Possible Match",
+  high_value_signal: "High-Value Signal",
+  relevant_signal: "Relevant Signal",
+  possible_signal: "Possible Signal",
+  low_relevance: "Low Relevance",
+  unscored: "Not Scored",
+};
+
+const RELEVANCE_TIER_VARIANT: Record<string, "accent" | "success" | "warning" | "muted"> = {
+  highly_relevant: "accent",
+  high_value_signal: "accent",
+  relevant: "success",
+  relevant_signal: "success",
+  possible_match: "warning",
+  possible_signal: "warning",
+  low_relevance: "muted",
+  unscored: "muted",
+};
+
+export function RelevanceTierBadge({ tier, score }: { tier: string; score: number | null }) {
+  const variant = RELEVANCE_TIER_VARIANT[tier] ?? "muted";
+  const label = RELEVANCE_TIER_LABELS[tier] ?? titleCase(tier);
   return (
-    <Badge variant="accent" className={cn("gap-1 uppercase tracking-wide", className)}>
+    <Badge variant={variant} className="gap-1 font-medium">
+      {label}
+      {score !== null && <span className="font-semibold tabular-nums opacity-90">· {score}</span>}
+    </Badge>
+  );
+}
+
+export function SampleDataBadge({ className }: { className?: string }) {
+  // Informational caveat, not a positive highlight — muted, not gold, so it never
+  // competes with the badges that are actually signaling something important.
+  return (
+    <Badge variant="outline" className={cn("gap-1 uppercase tracking-wide text-muted-foreground", className)}>
       <FlaskConical className="h-3 w-3" />
       Sample Data
     </Badge>
@@ -44,7 +93,9 @@ export function setAsideLabel(value: string): string {
 }
 
 export function SetAsideBadge({ value }: { value: string }) {
-  const variant = value === "sdvosb" ? "accent" : value === "unrestricted" ? "muted" : "secondary";
+  // SDVOSB is Principal's own set-aside status — the one set-aside genuinely worth
+  // flagging as a differentiator; everything else is a neutral descriptor.
+  const variant = value === "sdvosb" ? "success" : value === "unrestricted" ? "muted" : "secondary";
   return <Badge variant={variant}>{SET_ASIDE_LABELS[value] ?? titleCase(value)}</Badge>;
 }
 
@@ -77,7 +128,7 @@ export function PriorityBadge({ value }: { value: string }) {
 }
 
 export function TaskStatusBadge({ value }: { value: string }) {
-  const variant = value === "completed" ? "success" : value === "cancelled" ? "muted" : value === "in_progress" ? "accent" : "outline";
+  const variant = value === "completed" ? "success" : value === "cancelled" ? "muted" : value === "in_progress" ? "warning" : "outline";
   return <Badge variant={variant}>{titleCase(value)}</Badge>;
 }
 
@@ -94,7 +145,11 @@ export const INTELLIGENCE_CATEGORY_LABELS: Record<string, string> = {
   award_intelligence: "Award Intelligence",
 };
 
+// Pre-Solicitation is the one deliberately-gold category — it's the earliest point
+// Principal can meaningfully position on an opportunity (see docs/PHASE2_ARCHITECTURE.md),
+// worth visually standing out from the other three, which use the ordinary tone system.
 export function IntelligenceCategoryBadge({ value }: { value: string }) {
-  const variant = value === "live_opportunity" ? "success" : value === "pre_solicitation" ? "accent" : value === "early_signal" ? "warning" : "secondary";
+  const variant =
+    value === "live_opportunity" ? "success" : value === "pre_solicitation" ? "accent" : value === "early_signal" ? "warning" : "secondary";
   return <Badge variant={variant}>{INTELLIGENCE_CATEGORY_LABELS[value] ?? titleCase(value)}</Badge>;
 }

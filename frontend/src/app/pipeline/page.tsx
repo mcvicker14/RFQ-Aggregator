@@ -79,16 +79,18 @@ export default function PipelinePage() {
             const items = byStage.get(stage.id) ?? [];
             const stageValue = items.reduce((sum, o) => sum + (o.estimated_fee ?? 0), 0);
             return (
-              <div key={stage.id} className="flex w-72 shrink-0 flex-col gap-2">
-                <div className="flex items-center justify-between px-1">
+              <div key={stage.id} className="flex w-72 shrink-0 flex-col rounded-lg border border-border bg-secondary/40">
+                <div className="flex items-center justify-between rounded-t-lg border-b border-border bg-card px-3 py-2.5">
                   <span className="text-xs font-semibold text-foreground">{stage.name}</span>
-                  <span className="text-[11px] text-muted-foreground">{items.length} · {formatCurrency(stageValue, { compact: true })}</span>
+                  <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10.5px] font-medium tabular-nums text-muted-foreground">
+                    {items.length} · {formatCurrency(stageValue, { compact: true })}
+                  </span>
                 </div>
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-2 p-2">
                   {items.map((opp) => (
                     <Card
                       key={opp.id}
-                      className="cursor-pointer p-3 hover:border-primary/40"
+                      className="cursor-pointer p-3 transition-shadow hover:border-primary/30 hover:shadow-md"
                       onClick={() => router.push(`/opportunities/${opp.id}`)}
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -97,7 +99,7 @@ export default function PipelinePage() {
                       </div>
                       <div className="mt-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
                         <span>{opp.agency?.short_name ?? "—"}</span>
-                        <span>{formatCurrency(opp.estimated_fee, { compact: true })}</span>
+                        <span className="font-medium tabular-nums">{formatCurrency(opp.estimated_fee, { compact: true })}</span>
                       </div>
                       <div className="mt-1 flex items-center justify-between gap-2">
                         <span className={cn("text-[11px]", opp.is_sample_data && "opacity-80")}>{formatDate(opp.proposal_due_at)}</span>

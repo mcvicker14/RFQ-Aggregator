@@ -35,7 +35,7 @@ export function HorizontalBarChartCard({
 }) {
   const top = data.slice(0, 8);
   return (
-    <Card className="p-4">
+    <Card className="p-5">
       <CardHeader className="p-0 pb-3">
         <CardTitle>{title}</CardTitle>
       </CardHeader>
@@ -70,7 +70,7 @@ export function HorizontalBarChartCard({
 
 export function TrendChartCard({ title, data }: { title: string; data: ChartBucket[] }) {
   return (
-    <Card className="p-4">
+    <Card className="p-5">
       <CardHeader className="p-0 pb-3">
         <CardTitle>{title}</CardTitle>
       </CardHeader>
@@ -83,7 +83,14 @@ export function TrendChartCard({ title, data }: { title: string; data: ChartBuck
             <XAxis dataKey="label" tick={{ fontSize: 11, fill: CHART_AXIS }} axisLine={{ stroke: CHART_GRID }} tickLine={false} />
             <YAxis tick={{ fontSize: 11, fill: CHART_AXIS }} tickFormatter={(v) => formatCurrency(v, { compact: true })} axisLine={false} tickLine={false} width={56} />
             <Tooltip content={<ChartTooltip />} cursor={{ stroke: CHART_GRID }} />
-            <Line type="monotone" dataKey="value" stroke="#2a78d6" strokeWidth={2} dot={{ r: 3, fill: "#2a78d6" }} activeDot={{ r: 5 }} />
+            <Line
+              type="monotone"
+              dataKey="value"
+              stroke="hsl(var(--primary))"
+              strokeWidth={2}
+              dot={{ r: 3, fill: "hsl(var(--primary))" }}
+              activeDot={{ r: 5 }}
+            />
           </LineChart>
         </ResponsiveContainer>
       )}

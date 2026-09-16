@@ -38,7 +38,7 @@ export default function ContactDetailPage() {
         <h1 className="text-xl font-semibold text-foreground">{contact.full_name}</h1>
         <div className="mt-1 flex items-center gap-2">
           <Badge variant="outline">{titleCase(contact.role)}</Badge>
-          {contact.relationship_strength && <Badge variant="accent">Relationship {contact.relationship_strength}/5</Badge>}
+          {contact.relationship_strength && <Badge variant="secondary">Relationship {contact.relationship_strength}/5</Badge>}
         </div>
       </div>
 

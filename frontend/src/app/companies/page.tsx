@@ -96,7 +96,7 @@ export default function CompaniesPage() {
                   <TableCell><Badge variant="outline">{titleCase(c.company_type)}</Badge></TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1">
-                      {socioeconomicTags(c).map((t) => <Badge key={t} variant="accent">{t}</Badge>)}
+                      {socioeconomicTags(c).map((t) => <Badge key={t} variant="secondary">{t}</Badge>)}
                     </div>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">

@@ -47,6 +47,14 @@ const config: Config = {
           DEFAULT: "hsl(var(--warning))",
           foreground: "hsl(var(--warning-foreground))",
         },
+        sidebar: {
+          DEFAULT: "hsl(var(--sidebar))",
+          foreground: "hsl(var(--sidebar-foreground))",
+          "muted-foreground": "hsl(var(--sidebar-muted-foreground))",
+          border: "hsl(var(--sidebar-border))",
+          active: "hsl(var(--sidebar-active))",
+          accent: "hsl(var(--sidebar-accent))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

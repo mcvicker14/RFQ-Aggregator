@@ -10,10 +10,14 @@ const badgeVariants = cva(
         default: "border-transparent bg-primary text-primary-foreground",
         secondary: "border-transparent bg-secondary text-secondary-foreground",
         outline: "border-border text-foreground",
-        success: "border-transparent bg-success/15 text-success",
-        warning: "border-transparent bg-warning/15 text-warning",
-        destructive: "border-transparent bg-destructive/15 text-destructive",
-        accent: "border-transparent bg-accent/15 text-accent-foreground",
+        // Soft tint + a whisper of matching-color border, rather than a flat fill —
+        // restrained enough that only the highest-priority items need to stand out.
+        success: "border-success/15 bg-success/10 text-success",
+        warning: "border-warning/15 bg-warning/10 text-warning",
+        destructive: "border-destructive/15 bg-destructive/10 text-destructive",
+        // Gold — reserved for the specific "this is the important one" signal, not a
+        // general-purpose status color (see components/domain/badges.tsx for where).
+        accent: "border-accent/25 bg-accent/10 text-accent-foreground",
         muted: "border-transparent bg-muted text-muted-foreground",
       },
     },
