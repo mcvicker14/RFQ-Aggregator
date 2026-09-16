@@ -191,8 +191,12 @@ function DiscoverPageInner() {
                 <TableHead>Source</TableHead>
                 <TableHead>Key Date</TableHead>
                 <TableHead>Value / Funding</TableHead>
-                <TableHead>Relevance</TableHead>
-                <TableHead>Signal Score</TableHead>
+                <TableHead title="Could this plausibly lead to engineering work for Principal? SAM.gov and Grants.gov each have their own Relevance score, shown with its own label per row.">
+                  Relevance
+                </TableHead>
+                <TableHead title="How mature/actionable this early signal is — a different question from Relevance, which asks whether the signal is even worth Principal's attention in the first place.">
+                  Signal Score
+                </TableHead>
                 <TableHead>Detected</TableHead>
               </TableRow>
             </TableHeader>
@@ -239,13 +243,40 @@ function DiscoverPageInner() {
                     <TableCell>
                       {(() => {
                         // Mutually exclusive in practice — an item comes from exactly one
-                        // source, so at most one of these is ever non-null.
-                        const score = item.sam_relevance_score ?? item.grants_relevance_score;
-                        return score !== null ? (
-                          <ScoreBadge score={score} band={relevanceScoreBand(score)} />
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        );
+                        // source, so at most one of these is ever non-null. Each is
+                        // labeled explicitly (not just a bare number) so it's never
+                        // confused with the separate Signal Score column, and so sorting
+                        // by "Grant Engineering Relevance Score" has a visibly labeled
+                        // column to confirm the order actually changed against.
+                        if (item.grants_relevance_score !== null) {
+                          return (
+                            <div
+                              className="flex items-center gap-1.5"
+                              title="Grant Engineering Relevance Score — could this plausibly lead to engineering work for Principal?"
+                            >
+                              <span className="text-xs text-muted-foreground">Grant Relevance:</span>
+                              <ScoreBadge
+                                score={item.grants_relevance_score}
+                                band={relevanceScoreBand(item.grants_relevance_score)}
+                              />
+                            </div>
+                          );
+                        }
+                        if (item.sam_relevance_score !== null) {
+                          return (
+                            <div
+                              className="flex items-center gap-1.5"
+                              title="SAM Relevance Score — is this SAM.gov notice even worth Principal's attention?"
+                            >
+                              <span className="text-xs text-muted-foreground">SAM Relevance:</span>
+                              <ScoreBadge
+                                score={item.sam_relevance_score}
+                                band={relevanceScoreBand(item.sam_relevance_score)}
+                              />
+                            </div>
+                          );
+                        }
+                        return <span className="text-xs text-muted-foreground">—</span>;
                       })()}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">

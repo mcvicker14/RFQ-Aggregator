@@ -292,6 +292,63 @@ def test_sort_by_grants_relevance_score(client, db):
     assert [i["title"] for i in response.json()] == ["High", "Mid"]
 
 
+def test_grants_relevance_score_and_early_signal_score_are_distinct_fields(client, db):
+    # Locks in the data contract Discover's UI fix depends on: a Grants.gov item
+    # carries grants_relevance_score ("could this plausibly lead to engineering work")
+    # and early_signal_score ("how mature/actionable is this signal") as two separate,
+    # independently valued response fields -- never aliased to each other, and each
+    # returned even when they happen to differ, so the frontend can label and display
+    # both distinctly instead of a user mistaking one score for the other.
+    source = _source(db)
+    _item(
+        db, source, external_id="A", title="Distinct scores",
+        intelligence_category=IntelligenceCategory.EARLY_SIGNAL,
+        grants_relevance_score=81, grants_relevance_rationale={}, early_signal_score=64,
+    )
+    db.commit()
+
+    response = client.get(
+        "/api/intelligence/items",
+        params={"source_id": str(source.id), "grants_relevance_tier": "all"},
+    )
+
+    body = response.json()[0]
+    assert body["grants_relevance_score"] == 81
+    assert body["early_signal_score"] == 64
+    assert body["grants_relevance_score"] != body["early_signal_score"]
+
+
+def test_source_id_filter_combines_with_grants_relevance_tier_sort_and_ascending_direction(client, db):
+    # Complements test_source_id_filter_combines_with_grants_relevance_tier_and_sort
+    # (which only checks descending) -- proves sort_dir genuinely drives the ordering
+    # by Grant Engineering Relevance Score rather than coincidentally matching
+    # insertion order, the same causal check used to verify the Discover UI fix live.
+    source = _source(db)
+    _item(db, source, external_id="A", title="High", grants_relevance_score=90,
+          intelligence_category=IntelligenceCategory.EARLY_SIGNAL)
+    _item(db, source, external_id="B", title="Mid", grants_relevance_score=70,
+          intelligence_category=IntelligenceCategory.EARLY_SIGNAL)
+    db.commit()
+
+    desc = client.get(
+        "/api/intelligence/items",
+        params={
+            "source_id": str(source.id), "grants_relevance_tier": "relevant_signal",
+            "sort_by": "grants_relevance_score", "sort_dir": "desc",
+        },
+    )
+    asc = client.get(
+        "/api/intelligence/items",
+        params={
+            "source_id": str(source.id), "grants_relevance_tier": "relevant_signal",
+            "sort_by": "grants_relevance_score", "sort_dir": "asc",
+        },
+    )
+
+    assert [i["title"] for i in desc.json()] == ["High", "Mid"]
+    assert [i["title"] for i in asc.json()] == ["Mid", "High"]
+
+
 # --- pursuit_score: joined from the latest OpportunityScore, not an IntelligenceItem column --
 
 def _score_opportunity(db, opportunity_id, score, computed_at):
