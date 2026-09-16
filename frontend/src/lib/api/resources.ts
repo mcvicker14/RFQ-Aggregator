@@ -49,7 +49,7 @@ export const dashboardApi = {
 
 // --- Opportunities ----------------------------------------------------------------
 export interface OpportunityListParams {
-  [key: string]: string | number | undefined;
+  [key: string]: string | number | boolean | undefined;
   q?: string;
   stage_id?: string;
   agency_id?: string;
@@ -58,6 +58,10 @@ export interface OpportunityListParams {
   maturity_stage?: string;
   status?: string;
   min_score?: number;
+  include_sample_data?: boolean;
+  // Named Dashboard-KPI predicate — see backend/app/services/dashboard_filters.py's
+  // KPI_FILTER_NAMES for the exact accepted values.
+  kpi?: string;
   sort_by?: string;
   sort_dir?: string;
   limit?: number;

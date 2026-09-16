@@ -5,37 +5,50 @@ import Link from "next/link";
 import {
   Briefcase,
   DollarSign,
-  Sparkles,
   CalendarClock,
   Gavel,
   FileEdit,
-  Users,
-  Award,
-  Trophy,
-  ThumbsDown,
-  Percent,
-  ShieldCheck,
-  Lock,
-  RefreshCcw,
-  Rocket,
+  TrendingUp,
   Radar,
   CircleDot,
   Clock,
-  TrendingUp,
   Landmark,
-  CheckCircle2,
   AlertTriangle,
   Bell,
 } from "lucide-react";
 import { dashboardApi } from "@/lib/api/resources";
 import { KpiCard } from "@/components/dashboard/kpi-card";
+import { CompactStat } from "@/components/dashboard/compact-stat";
 import { HorizontalBarChartCard, TrendChartCard } from "@/components/dashboard/charts";
 import { OpportunityTable } from "@/components/opportunities/opportunity-table";
 import { TaskStatusBadge, PriorityBadge, contractTypeLabel } from "@/components/domain/badges";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState, ErrorState, EmptyState } from "@/components/ui/states";
-import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { formatCurrency, formatDate } from "@/lib/utils";
 import type { DashboardSummary } from "@/types";
+
+// Every clickable KPI below links to /opportunities or /discover using the exact same
+// named filter (see backend/app/services/dashboard_filters.py) the Dashboard's own
+// count was computed with — never a second, separately-maintained definition of "what
+// this number means" — and a zero count renders the card non-interactive rather than
+// linking to a destination the user already knows is empty.
+function hrefIf(count: number, href: string): string | undefined {
+  return count > 0 ? href : undefined;
+}
+
+function oppHref(kpi: string | undefined, includeSamples: boolean): string {
+  const usp = new URLSearchParams();
+  if (kpi) usp.set("kpi", kpi);
+  if (!includeSamples) usp.set("include_sample_data", "false");
+  const qs = usp.toString();
+  return qs ? `/opportunities?${qs}` : "/opportunities";
+}
+
+function discoverHref(category: string, includeSamples: boolean): string {
+  const usp = new URLSearchParams({ category });
+  if (!includeSamples) usp.set("include_sample_data", "false");
+  return `/discover?${usp.toString()}`;
+}
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardSummary | null>(null);
@@ -58,7 +71,7 @@ export default function DashboardPage() {
   if (error) return <ErrorState message={error} onRetry={load} />;
   if (!data) return null;
 
-  const { kpis, intelligence: intel } = data;
+  const { kpis, intelligence: intel, include_samples: includeSamples } = data;
   const today = new Date();
 
   return (
@@ -71,50 +84,122 @@ export default function DashboardPage() {
         </p>
       </div>
 
+      {/* Tier 1 — primary executive row: the headline numbers, full-size cards, no
+          section chrome needed since prominence itself signals "read this first." */}
+      <div className="flex flex-col gap-4">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          <KpiCard
+            label="Active Opportunities"
+            value={kpis.total_active_opportunities}
+            icon={Briefcase}
+            href={hrefIf(kpis.total_active_opportunities, oppHref(undefined, includeSamples))}
+          />
+          <KpiCard
+            label="Awaiting Go/No-Go"
+            value={kpis.awaiting_go_no_go}
+            icon={Gavel}
+            tone={kpis.awaiting_go_no_go > 0 ? "warning" : "default"}
+            href={hrefIf(kpis.awaiting_go_no_go, oppHref("awaiting_go_no_go", includeSamples))}
+          />
+          <KpiCard
+            label="Active Proposals"
+            value={kpis.active_proposals}
+            icon={FileEdit}
+            href={hrefIf(kpis.active_proposals, oppHref("active_proposals", includeSamples))}
+          />
+          <KpiCard
+            label="Due Within 30 Days"
+            value={kpis.due_within_30_days}
+            icon={CalendarClock}
+            tone={kpis.due_within_30_days > 0 ? "warning" : "default"}
+            href={hrefIf(kpis.due_within_30_days, oppHref("due_soon", includeSamples))}
+          />
+          <KpiCard
+            label="Early Signals"
+            value={intel.early_signal_count}
+            icon={TrendingUp}
+            tone="warning"
+            href={hrefIf(intel.early_signal_count, discoverHref("early_signal", includeSamples))}
+          />
+        </div>
+
+        {/* Tier 2 — business value: dollar totals, not tied to one filtered record set
+            the same way a count is, so these stay informational rather than links. */}
+        <div>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Business Value</h3>
+          <div className="grid grid-cols-2 gap-3 sm:max-w-md">
+            <KpiCard
+              label="Total Contract Value"
+              value={formatCurrency(kpis.total_estimated_contract_value, { compact: true })}
+              icon={DollarSign}
+            />
+            <KpiCard
+              label="Est. Principal Fees"
+              value={formatCurrency(kpis.total_estimated_fee, { compact: true })}
+              icon={DollarSign}
+              tone="accent"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Tier 3 — secondary/attention: compact chips, still all clickable. */}
       <div>
-        <h2 className="mb-3 flex items-center gap-1.5 text-sm font-semibold text-foreground">
-          <Briefcase className="h-4 w-4" /> Pipeline Health
-        </h2>
-        <div className="flex flex-col gap-4">
-        <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pipeline Overview</h3>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <KpiCard label="Active Opportunities" value={kpis.total_active_opportunities} icon={Briefcase} />
-            <KpiCard label="Total Contract Value" value={formatCurrency(kpis.total_estimated_contract_value, { compact: true })} icon={DollarSign} />
-            <KpiCard label="Est. Principal Fees" value={formatCurrency(kpis.total_estimated_fee, { compact: true })} icon={DollarSign} tone="accent" />
-            <KpiCard label="Discovered This Week" value={kpis.discovered_this_week} icon={Sparkles} />
-            <KpiCard label="Due Within 30 Days" value={kpis.due_within_30_days} icon={CalendarClock} tone={kpis.due_within_30_days > 0 ? "warning" : "default"} />
-          </div>
+        <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <AlertTriangle className="h-3.5 w-3.5" /> Needs Attention
+        </h3>
+        <div className="flex flex-wrap gap-2">
+          <CompactStat
+            label="Interviews Pending"
+            value={kpis.interviews_pending}
+            href={hrefIf(kpis.interviews_pending, oppHref("interviews_pending", includeSamples))}
+          />
+          <CompactStat
+            label="Awards Pending"
+            value={kpis.awards_pending}
+            tone={kpis.awards_pending > 0 ? "warning" : "default"}
+            href={hrefIf(kpis.awards_pending, oppHref("awards_pending", includeSamples))}
+          />
+          <CompactStat
+            label="SDVOSB Set-Asides"
+            value={kpis.sdvosb_setaside_count}
+            tone="success"
+            href={hrefIf(kpis.sdvosb_setaside_count, oppHref("sdvosb", includeSamples))}
+          />
+          <CompactStat
+            label="Possible Recompetes"
+            value={kpis.recompete_count}
+            href={hrefIf(kpis.recompete_count, oppHref("recompete", includeSamples))}
+          />
+          <CompactStat
+            label="Sources With Errors"
+            value={intel.sources_with_errors}
+            tone={intel.sources_with_errors > 0 ? "destructive" : "default"}
+            href={hrefIf(intel.sources_with_errors, "/sources?health=error")}
+          />
         </div>
+      </div>
 
-        <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Workflow Status</h3>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <KpiCard label="Awaiting Go/No-Go" value={kpis.awaiting_go_no_go} icon={Gavel} tone={kpis.awaiting_go_no_go > 0 ? "warning" : "default"} />
-            <KpiCard label="Active Proposals" value={kpis.active_proposals} icon={FileEdit} />
-            <KpiCard label="Interviews Pending" value={kpis.interviews_pending} icon={Users} />
-            <KpiCard label="Awards Pending" value={kpis.awards_pending} icon={Award} />
-          </div>
-        </div>
-
-        <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Performance</h3>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <KpiCard label="Wins" value={kpis.wins} icon={Trophy} tone="success" />
-            <KpiCard label="Losses" value={kpis.losses} icon={ThumbsDown} tone="destructive" />
-            <KpiCard label="Win Rate" value={kpis.win_rate_pct !== null ? `${kpis.win_rate_pct.toFixed(0)}%` : "—"} icon={Percent} />
-          </div>
-        </div>
-
-        <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Set-Asides &amp; Signals</h3>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <KpiCard label="SDVOSB Set-Asides" value={kpis.sdvosb_setaside_count} icon={ShieldCheck} tone="success" />
-            <KpiCard label="Limited Competition" value={kpis.sole_source_or_limited_competition_count} icon={Lock} />
-            <KpiCard label="Possible Recompetes" value={kpis.recompete_count} icon={RefreshCcw} />
-            <KpiCard label="Early-Stage Signals" value={kpis.early_stage_count} icon={Rocket} />
-          </div>
-        </div>
+      {/* Tier 4 — moved out of main emphasis: still fully present, most compact. */}
+      <div>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">More Metrics</h3>
+        <div className="flex flex-wrap gap-2">
+          <CompactStat label="Wins" value={kpis.wins} tone="success" />
+          <CompactStat label="Losses" value={kpis.losses} tone="destructive" />
+          <CompactStat label="Win Rate" value={kpis.win_rate_pct !== null ? `${kpis.win_rate_pct.toFixed(0)}%` : "—"} />
+          <CompactStat
+            label="Limited Competition"
+            value={kpis.sole_source_or_limited_competition_count}
+            href={hrefIf(kpis.sole_source_or_limited_competition_count, oppHref("limited_competition", includeSamples))}
+          />
+          <CompactStat
+            label="Early-Stage Signals"
+            value={kpis.early_stage_count}
+            href={hrefIf(kpis.early_stage_count, oppHref("early_stage", includeSamples))}
+          />
+          <CompactStat label="Discovered This Week" value={kpis.discovered_this_week} />
+          <CompactStat label="Sources Checked Today" value={intel.sources_checked_today} />
+          <CompactStat label="New This Week" value={intel.new_this_week} />
         </div>
       </div>
 
@@ -123,18 +208,25 @@ export default function DashboardPage() {
           <h2 className="flex items-center gap-1.5 text-sm font-semibold text-foreground"><Radar className="h-4 w-4" /> Intelligence</h2>
           <Link href="/discover" className="text-xs font-medium text-primary hover:underline">Open Discover</Link>
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
-          <KpiCard label="Live Opportunities" value={intel.live_opportunity_count} icon={CircleDot} tone="success" />
-          <KpiCard label="Pre-Solicitations" value={intel.pre_solicitation_count} icon={Clock} tone="default" />
-          <KpiCard label="Early Signals" value={intel.early_signal_count} icon={TrendingUp} tone="warning" />
-          <KpiCard label="Award Intelligence" value={intel.award_intelligence_count} icon={Landmark} />
-          <KpiCard label="New This Week" value={intel.new_this_week} icon={Sparkles} />
-          <KpiCard label="Sources Checked Today" value={intel.sources_checked_today} icon={CheckCircle2} />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <KpiCard
-            label="Sources With Errors"
-            value={intel.sources_with_errors}
-            icon={AlertTriangle}
-            tone={intel.sources_with_errors > 0 ? "destructive" : "default"}
+            label="Live Opportunities"
+            value={intel.live_opportunity_count}
+            icon={CircleDot}
+            tone="success"
+            href={hrefIf(intel.live_opportunity_count, discoverHref("live_opportunity", includeSamples))}
+          />
+          <KpiCard
+            label="Pre-Solicitations"
+            value={intel.pre_solicitation_count}
+            icon={Clock}
+            href={hrefIf(intel.pre_solicitation_count, discoverHref("pre_solicitation", includeSamples))}
+          />
+          <KpiCard
+            label="Award Intelligence"
+            value={intel.award_intelligence_count}
+            icon={Landmark}
+            href={hrefIf(intel.award_intelligence_count, discoverHref("award_intelligence", includeSamples))}
           />
         </div>
         {intel.new_intelligence_since_last_view > 0 && (

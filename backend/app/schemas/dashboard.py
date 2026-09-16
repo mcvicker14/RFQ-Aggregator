@@ -46,6 +46,10 @@ class IntelligenceKpis(BaseModel):
 
 class DashboardSummary(BaseModel):
     kpis: KpiCards
+    # Echoes the exact sample-data visibility this summary was computed with, so a
+    # Dashboard drill-down link can pass include_sample_data through unchanged and the
+    # destination page's count can never diverge from the number the user clicked.
+    include_samples: bool
     intelligence: IntelligenceKpis
     pipeline_by_stage: list[ChartBucket]
     pipeline_by_agency: list[ChartBucket]

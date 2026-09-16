@@ -10,8 +10,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.agency import Agency
-from app.models.enums import IntelligenceCategory, MaturityStage, OpportunityStatus, SourceHealthStatus, TaskStatus
-from app.models.gonogo import GoNoGoReview
+from app.models.enums import IntelligenceCategory, OpportunityStatus, SetAsideType, SourceHealthStatus, TaskStatus
 from app.models.intelligence import IntelligenceItem, IntelligenceSource
 from app.models.opportunity import Opportunity
 from app.models.pipeline import PipelineStage
@@ -22,13 +21,18 @@ from app.schemas.dashboard import ChartBucket, DashboardSummary, IntelligenceKpi
 from app.schemas.opportunity import OpportunityListItem
 from app.schemas.task import TaskRead
 from app.services.app_settings import hide_sample_data_by_default
+from app.services.dashboard_filters import (
+    ACTIVE_PROPOSAL_STAGE_NAMES,
+    DISCOVERED_RECENTLY_DAYS,
+    DUE_SOON_DEFAULT_DAYS,
+    EARLY_STAGES,
+    STAGE_AWARD_PENDING,
+    STAGE_INTERVIEW,
+    STAGE_LOST,
+    awaiting_go_no_go_clause,
+)
 from app.services.grants_relevance_scoring import RELEVANT_THRESHOLD as GRANTS_RELEVANT_THRESHOLD
 from app.services.sam_relevance_scoring import RELEVANT_THRESHOLD as SAM_RELEVANT_THRESHOLD
-
-EARLY_STAGES = {
-    MaturityStage.RUMORED_CONCEPTUAL, MaturityStage.FUNDING_IDENTIFIED, MaturityStage.PLANNING,
-    MaturityStage.PROCUREMENT_FORECAST, MaturityStage.SOURCES_SOUGHT_RFI, MaturityStage.SOLICITATION_EXPECTED,
-}
 
 
 def _to_buckets(agg: dict[str, tuple[float, int]]) -> list[ChartBucket]:
@@ -128,8 +132,8 @@ def _high_priority_signals(db: Session, include_samples: bool, limit: int = 10) 
 
 def build_dashboard_summary(db: Session, user: User) -> DashboardSummary:
     now = datetime.now(timezone.utc)
-    week_ago = now - timedelta(days=7)
-    thirty_days = now + timedelta(days=30)
+    week_ago = now - timedelta(days=DISCOVERED_RECENTLY_DAYS)
+    thirty_days = now + timedelta(days=DUE_SOON_DEFAULT_DAYS)
 
     # Sample data is included by default (unchanged behavior) unless an administrator
     # has explicitly turned this on — see docs/PHASE2_ARCHITECTURE.md §9. This is a
@@ -141,6 +145,9 @@ def build_dashboard_summary(db: Session, user: User) -> DashboardSummary:
     if not include_samples:
         opp_query = opp_query.where(Opportunity.is_sample_data.is_(False))
     opportunities = db.execute(opp_query).scalars().all()
+    awaiting_ids = set(
+        db.execute(opp_query.with_only_columns(Opportunity.id).where(awaiting_go_no_go_clause())).scalars()
+    )
     stages = {s.id: s for s in db.execute(select(PipelineStage)).scalars().all()}
     agencies = {a.id: a for a in db.execute(select(Agency)).scalars().all()}
 
@@ -149,8 +156,6 @@ def build_dashboard_summary(db: Session, user: User) -> DashboardSummary:
         existing = scores_by_opp.get(score.opportunity_id)
         if existing is None or score.computed_at > existing.computed_at:
             scores_by_opp[score.opportunity_id] = score
-
-    reviews_by_opp = {r.opportunity_id: r for r in db.execute(select(GoNoGoReview)).scalars().all()}
 
     total_value = total_fee = 0.0
     discovered_this_week = due_30 = awaiting_gonogo = 0
@@ -181,7 +186,7 @@ def build_dashboard_summary(db: Session, user: User) -> DashboardSummary:
             upcoming_deadlines.append(opp)
         if opp.is_sdvosb_setaside:
             sdvosb_count += 1
-        if opp.set_aside.value != "unrestricted":
+        if opp.set_aside != SetAsideType.UNRESTRICTED:
             limited_competition_count += 1
         if opp.incumbent_company_id is not None:
             recompete_count += 1
@@ -190,18 +195,17 @@ def build_dashboard_summary(db: Session, user: User) -> DashboardSummary:
 
         stage = stages.get(opp.pipeline_stage_id)
         stage_name = stage.name if stage else "Unassigned"
-        review = reviews_by_opp.get(opp.id)
-        if stage_name == "Go/No-Go" or (review and review.decision is None):
+        if opp.id in awaiting_ids:
             awaiting_gonogo += 1
-        if stage_name in ("Proposal Development", "Submitted"):
+        if stage_name in ACTIVE_PROPOSAL_STAGE_NAMES:
             active_proposals += 1
-        if stage_name == "Interview":
+        if stage_name == STAGE_INTERVIEW:
             interviews_pending += 1
-        if stage_name == "Award Pending":
+        if stage_name == STAGE_AWARD_PENDING:
             awards_pending += 1
         if stage and stage.is_closed_won:
             wins += 1
-        if stage_name == "Lost":
+        if stage_name == STAGE_LOST:
             losses += 1
 
         by_stage[stage_name][0] += fee
@@ -283,6 +287,7 @@ def build_dashboard_summary(db: Session, user: User) -> DashboardSummary:
 
     return DashboardSummary(
         kpis=kpis,
+        include_samples=include_samples,
         intelligence=intelligence_kpis,
         pipeline_by_stage=_to_buckets(by_stage),
         pipeline_by_agency=_to_buckets(by_agency),

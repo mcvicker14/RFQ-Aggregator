@@ -436,6 +436,7 @@ export interface IntelligenceKpis {
 
 export interface DashboardSummary {
   kpis: KpiCards;
+  include_samples: boolean;
   intelligence: IntelligenceKpis;
   pipeline_by_stage: ChartBucket[];
   pipeline_by_agency: ChartBucket[];

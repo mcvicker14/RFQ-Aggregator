@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -24,9 +25,14 @@ from app.schemas.opportunity import (
 from app.schemas.scoring import OpportunityScoreRead
 from app.services import opportunities as opportunities_service
 from app.services.activities import log_activity
+from app.services.dashboard_filters import KPI_FILTER_NAMES, apply_kpi_filter
 from app.services.scoring import calculate_score
 
 router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
+
+# Built from the shared KPI_FILTER_NAMES set rather than listed again here, so this
+# route's accepted `kpi` values can never drift out of sync with dashboard_filters.py.
+_KPI_PATTERN = "^(" + "|".join(sorted(KPI_FILTER_NAMES)) + ")$"
 
 
 def _latest_score(db: Session, opportunity_id: UUID) -> OpportunityScore | None:
@@ -57,9 +63,18 @@ def list_opportunities(
     status_filter: OpportunityStatus | None = Query(None, alias="status"),
     min_score: int | None = None,
     include_sample_data: bool = True,
+    kpi: str | None = Query(
+        None,
+        pattern=_KPI_PATTERN,
+        description=(
+            "Named Dashboard-KPI predicate (see dashboard_filters.KPI_FILTER_NAMES). Applies the "
+            "exact same filter build_dashboard_summary() uses to compute that KPI's count, so a "
+            "Dashboard drill-down link's result set can never drift from the number that linked here."
+        ),
+    ),
     sort_by: str = Query("proposal_due_at", pattern="^(proposal_due_at|created_at|title|estimated_fee|score)$"),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
-    limit: int = Query(100, le=500),
+    limit: int = Query(100, le=2000),
     offset: int = 0,
 ):
     stmt = select(Opportunity)
@@ -89,6 +104,8 @@ def list_opportunities(
         stmt = stmt.where(Opportunity.location_state == state.upper())
     if maturity_stage:
         stmt = stmt.where(Opportunity.maturity_stage == maturity_stage)
+    if kpi:
+        stmt = apply_kpi_filter(stmt, kpi, datetime.now(timezone.utc))
 
     # Sorting and pagination happen in Python below, after scores are attached —
     # "score" isn't a column on Opportunity (it lives in opportunity_scores), so a

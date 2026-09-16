@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { RefreshCcw, PlayCircle, History } from "lucide-react";
 import { intelligenceApi } from "@/lib/api/resources";
 import { useAuth } from "@/lib/auth";
@@ -12,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { LoadingState, ErrorState } from "@/components/ui/states";
+import { FilterChip } from "@/components/ui/filter-chip";
 import { titleCase } from "@/lib/utils";
 import type { IntelligenceSource, IntelligenceSyncRun, JurisdictionLevel, SourceHealthStatus, SyncRunStatus } from "@/types";
 
@@ -118,7 +120,8 @@ function SyncDiagnostics({ diagnostics }: { diagnostics: Record<string, unknown>
   );
 }
 
-export default function IntelligenceSourcesPage() {
+function IntelligenceSourcesPageInner() {
+  const searchParams = useSearchParams();
   const { user } = useAuth();
   const isAdmin = user?.role === "administrator";
   const canSync = user ? ["business_development", "executive", "administrator"].includes(user.role) : false;
@@ -127,6 +130,9 @@ export default function IntelligenceSourcesPage() {
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [jurisdiction, setJurisdiction] = useState("");
+  // Mirrors the exact predicate build_dashboard_summary() counts as "sources with
+  // errors" (health_status in FAILING/DEGRADED) — see the useMemo filter below.
+  const [healthError, setHealthError] = useState(searchParams.get("health") === "error");
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncingAll, setSyncingAll] = useState(false);
   const [syncAllMessage, setSyncAllMessage] = useState<string | null>(null);
@@ -189,13 +195,14 @@ export default function IntelligenceSourcesPage() {
     if (!sources) return null;
     return sources.filter((s) => {
       if (jurisdiction && s.jurisdiction_level !== jurisdiction) return false;
+      if (healthError && s.health_status !== "failing" && s.health_status !== "degraded") return false;
       if (q) {
         const text = `${s.name} ${s.organization ?? ""} ${s.geographic_coverage ?? ""}`.toLowerCase();
         if (!text.includes(q.toLowerCase())) return false;
       }
       return true;
     });
-  }, [sources, q, jurisdiction]);
+  }, [sources, q, jurisdiction, healthError]);
 
   if (error) return <ErrorState message={error} onRetry={load} />;
   if (!sources || !filtered) return <LoadingState />;
@@ -223,6 +230,10 @@ export default function IntelligenceSourcesPage() {
 
       {syncAllMessage && (
         <div className="rounded-md border border-border bg-secondary/40 p-3 text-sm text-foreground">{syncAllMessage}</div>
+      )}
+
+      {healthError && (
+        <FilterChip label="Dashboard filter: Sources With Errors" onClear={() => setHealthError(false)} />
       )}
 
       <div className="flex flex-wrap gap-2">
@@ -370,5 +381,13 @@ export default function IntelligenceSourcesPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+export default function IntelligenceSourcesPage() {
+  return (
+    <Suspense fallback={<LoadingState />}>
+      <IntelligenceSourcesPageInner />
+    </Suspense>
   );
 }

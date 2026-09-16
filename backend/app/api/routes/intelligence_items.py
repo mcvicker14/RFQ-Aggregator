@@ -108,7 +108,7 @@ def list_intelligence_items(
         pattern="^(first_detected_at|proposal_due_at|estimated_value_high|funding_amount|early_signal_score|sam_relevance_score|grants_relevance_score|pursuit_score)$",
     ),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
-    limit: int = Query(100, le=500),
+    limit: int = Query(100, le=2000),
     offset: int = 0,
 ):
     stmt = select(IntelligenceItem)

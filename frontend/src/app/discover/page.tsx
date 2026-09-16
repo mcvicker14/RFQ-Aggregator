@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LoadingState, ErrorState, EmptyState } from "@/components/ui/states";
 import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABELS, RelevanceTierBadge } from "@/components/domain/badges";
+import { FilterChip } from "@/components/ui/filter-chip";
 import { titleCase } from "@/lib/utils";
 import type { IntelligenceItem, IntelligenceCategory, IntelligenceSource } from "@/types";
 
@@ -52,7 +53,10 @@ function DiscoverPageInner() {
   const [category, setCategory] = useState(searchParams.get("category") ?? "");
   const [sourceId, setSourceId] = useState("");
   const [state, setState] = useState("");
-  const [hideSampleData, setHideSampleData] = useState(false);
+  // Reads the exact sample-data visibility a Dashboard link was built with (absent on
+  // a manual visit, defaulting to the same "include samples" behavior as elsewhere) —
+  // never re-derived, so this page's count can't drift from the number that linked here.
+  const [hideSampleData, setHideSampleData] = useState(searchParams.get("include_sample_data") === "false");
   const [samRelevanceTier, setSamRelevanceTier] = useState("relevant");
   const [grantsRelevanceTier, setGrantsRelevanceTier] = useState("relevant_signal");
   const [sortBy, setSortBy] = useState("first_detected_at");
@@ -71,7 +75,7 @@ function DiscoverPageInner() {
     () => ({
       q: q || undefined, category: category || undefined, source_id: sourceId || undefined,
       state: state || undefined, include_sample_data: !hideSampleData, sam_relevance_tier: samRelevanceTier,
-      grants_relevance_tier: grantsRelevanceTier, sort_by: sortBy, sort_dir: sortDir, limit: 200,
+      grants_relevance_tier: grantsRelevanceTier, sort_by: sortBy, sort_dir: sortDir, limit: 2000,
     }),
     [q, category, sourceId, state, hideSampleData, samRelevanceTier, grantsRelevanceTier, sortBy, sortDir]
   );
@@ -90,6 +94,7 @@ function DiscoverPageInner() {
         <div>
           <h1 className="text-xl font-semibold text-foreground">Discover</h1>
           <p className="text-sm text-muted-foreground">
+            {items ? `${items.length} result${items.length === 1 ? "" : "s"} · ` : ""}
             Live opportunities, pre-solicitations, early signals, and award intelligence from every connected source.
             SAM.gov and Grants.gov records are both broadly retrieved for auditability but only shown here at
             Relevant/Relevant Signal or above by default — widen either Relevance filter to see lower-confidence
@@ -101,6 +106,13 @@ function DiscoverPageInner() {
           <Button variant="outline" size="sm"><Radar className="h-4 w-4" /> Manage Sources</Button>
         </Link>
       </div>
+
+      {category && (
+        <FilterChip
+          label={`Dashboard filter: ${INTELLIGENCE_CATEGORY_LABELS[category] ?? category}`}
+          onClear={() => setCategory("")}
+        />
+      )}
 
       <div className="flex flex-wrap gap-2 rounded-lg border border-border bg-secondary/40 p-2.5">
         <Input placeholder="Search title, agency, location…" value={q} onChange={(e) => setQ(e.target.value)} className="max-w-xs bg-card" />
