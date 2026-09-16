@@ -55,6 +55,7 @@ def list_opportunities(
     maturity_stage: MaturityStage | None = None,
     status_filter: OpportunityStatus | None = Query(None, alias="status"),
     min_score: int | None = None,
+    include_sample_data: bool = True,
     sort_by: str = Query("proposal_due_at", pattern="^(proposal_due_at|created_at|title|estimated_fee|score)$"),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     limit: int = Query(100, le=500),
@@ -65,6 +66,8 @@ def list_opportunities(
         stmt = stmt.where(Opportunity.status == status_filter)
     else:
         stmt = stmt.where(Opportunity.status == OpportunityStatus.ACTIVE)
+    if not include_sample_data:
+        stmt = stmt.where(Opportunity.is_sample_data.is_(False))
     if q:
         like = f"%{q}%"
         stmt = stmt.where(

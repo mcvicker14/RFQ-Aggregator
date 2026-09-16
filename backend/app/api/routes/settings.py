@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -7,8 +8,26 @@ from app.db.session import get_db
 from app.models.scoring import ScoringWeightProfile
 from app.models.user import User
 from app.schemas.scoring import ScoringWeightProfileRead, ScoringWeightProfileUpdate
+from app.services.app_settings import HIDE_SAMPLE_DATA_KEY, hide_sample_data_by_default, set_setting
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+class HideSampleDataSetting(BaseModel):
+    hide_sample_data_by_default: bool
+
+
+@router.get("/hide-sample-data", response_model=HideSampleDataSetting)
+def get_hide_sample_data(db: Session = Depends(get_db), _current: User = Depends(get_current_user)):
+    return HideSampleDataSetting(hide_sample_data_by_default=hide_sample_data_by_default(db))
+
+
+@router.patch("/hide-sample-data", response_model=HideSampleDataSetting)
+def update_hide_sample_data(
+    payload: HideSampleDataSetting, db: Session = Depends(get_db), admin: User = Depends(require_admin)
+):
+    set_setting(db, HIDE_SAMPLE_DATA_KEY, payload.hide_sample_data_by_default, admin.id)
+    return payload
 
 
 def _active_profile(db: Session) -> ScoringWeightProfile:

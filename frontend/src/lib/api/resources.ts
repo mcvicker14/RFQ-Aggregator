@@ -11,6 +11,7 @@ import type {
   ForecastSummary,
   GoNoGoCriteriaScore,
   GoNoGoReview,
+  IntelligenceItem,
   IntelligenceSource,
   IntelligenceSyncRun,
   NaicsCode,
@@ -63,7 +64,7 @@ export interface OpportunityListParams {
   offset?: number;
 }
 
-function buildQuery(params: Record<string, string | number | undefined>): string {
+function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
   const usp = new URLSearchParams();
   Object.entries(params).forEach(([k, v]) => {
     if (v !== undefined && v !== null && v !== "") usp.set(k, String(v));
@@ -196,6 +197,30 @@ export const intelligenceApi = {
     api.get<IntelligenceSyncRun[]>(`/api/intelligence/sync-runs${buildQuery({ source_id: sourceId, limit })}`),
 };
 
+// --- Intelligence items (Discover feed) ----------------------------------------------
+export interface IntelligenceItemListParams {
+  [key: string]: string | number | boolean | undefined;
+  q?: string;
+  category?: string;
+  source_id?: string;
+  jurisdiction_level?: string;
+  state?: string;
+  naics_code?: string;
+  maturity_stage?: string;
+  set_aside?: string;
+  include_sample_data?: boolean;
+  unpromoted_only?: boolean;
+  sort_by?: string;
+  sort_dir?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export const intelligenceItemsApi = {
+  list: (params: IntelligenceItemListParams = {}) =>
+    api.get<IntelligenceItem[]>(`/api/intelligence/items${buildQuery(params)}`),
+};
+
 // --- Settings -----------------------------------------------------------------------
 export const settingsApi = {
   getScoringWeights: () =>
@@ -204,6 +229,9 @@ export const settingsApi = {
     ),
   updateScoringWeights: (data: Record<string, unknown>) =>
     api.patch("/api/settings/scoring-weights", data),
+  getHideSampleData: () => api.get<{ hide_sample_data_by_default: boolean }>("/api/settings/hide-sample-data"),
+  setHideSampleData: (value: boolean) =>
+    api.patch<{ hide_sample_data_by_default: boolean }>("/api/settings/hide-sample-data", { hide_sample_data_by_default: value }),
 };
 
 // --- Win/Loss -------------------------------------------------------------------------

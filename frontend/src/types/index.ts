@@ -517,3 +517,55 @@ export interface SyncAllResult {
   sources_succeeded: number;
   sources_skipped: string[];
 }
+
+export interface IntelligenceItem {
+  id: string;
+  intelligence_source_id: string;
+  external_id: string;
+  title: string;
+  description: string | null;
+  agency_name: string | null;
+  agency_id: string | null;
+  jurisdiction_level: JurisdictionLevel | null;
+  location_city: string | null;
+  location_state: string | null;
+  naics_code: string | null;
+  psc_code: string | null;
+  set_aside: SetAsideType | null;
+  estimated_value_low: number | null;
+  estimated_value_high: number | null;
+  funding_amount: number | null;
+  posted_at: string | null;
+  proposal_due_at: string | null;
+  estimated_solicitation_date: string | null;
+  estimated_award_date: string | null;
+  estimated_time_to_procurement: string | null;
+  maturity_stage: MaturityStage | null;
+  intelligence_category: IntelligenceCategory;
+  solicitation_number: string | null;
+  contract_number: string | null;
+  funding_award_number: string | null;
+  project_number: string | null;
+  incumbent_name: string | null;
+  awardee_name: string | null;
+  is_prime_award: boolean | null;
+  relevant_disciplines: string[] | null;
+  early_signal_score: number | null;
+  early_signal_score_rationale: {
+    band: string;
+    category_scores: Record<string, number>;
+    category_rationale: Record<string, string[]>;
+    disclaimer: string;
+  } | null;
+  first_detected_at: string;
+  last_seen_at: string;
+  opportunity_id: string | null;
+  dedup_status: string;
+  project_cluster_id: string | null;
+  dedup_match_reason: string | null;
+  is_sample_data: boolean;
+  source: string;
+  source_url: string | null;
+  retrieved_at: string;
+  confidence: string;
+}

@@ -19,6 +19,7 @@ from app.models.task import Task
 from app.schemas.dashboard import ChartBucket, DashboardSummary, KpiCards
 from app.schemas.opportunity import OpportunityListItem
 from app.schemas.task import TaskRead
+from app.services.app_settings import hide_sample_data_by_default
 
 EARLY_STAGES = {
     MaturityStage.RUMORED_CONCEPTUAL, MaturityStage.FUNDING_IDENTIFIED, MaturityStage.PLANNING,
@@ -50,7 +51,13 @@ def build_dashboard_summary(db: Session) -> DashboardSummary:
     week_ago = now - timedelta(days=7)
     thirty_days = now + timedelta(days=30)
 
-    opportunities = db.execute(select(Opportunity).where(Opportunity.status == OpportunityStatus.ACTIVE)).scalars().all()
+    # Sample data is included by default (unchanged behavior) unless an administrator
+    # has explicitly turned this on — see docs/PHASE2_ARCHITECTURE.md §9. This is a
+    # deliberate opt-in, not a silent change to numbers a user may already be checking.
+    opp_query = select(Opportunity).where(Opportunity.status == OpportunityStatus.ACTIVE)
+    if hide_sample_data_by_default(db):
+        opp_query = opp_query.where(Opportunity.is_sample_data.is_(False))
+    opportunities = db.execute(opp_query).scalars().all()
     stages = {s.id: s for s in db.execute(select(PipelineStage)).scalars().all()}
     agencies = {a.id: a for a in db.execute(select(Agency)).scalars().all()}
 
