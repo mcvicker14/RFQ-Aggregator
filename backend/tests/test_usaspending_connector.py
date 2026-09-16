@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from app.connectors.registry import get_intelligence_connector
-from app.connectors.usaspending import USAspendingConnector, _extract_name
+from app.connectors.usaspending import USAspendingConnector, _extract_code, _extract_name, _parse_date
 from app.models.enums import IntelligenceCategory, SourceHealthStatus, SyncRunStatus, SyncTriggeredBy
 from app.models.intelligence import IntelligenceItem, IntelligenceSource
 from app.services.intelligence_sync import run_sync
@@ -132,26 +132,120 @@ def test_field_mapping_extracts_scalar_from_nested_recipient_name():
     assert isinstance(raw.fields["awardee_name"], str)
 
 
-def test_field_mapping_survives_full_production_shaped_award():
-    """The exact combination that failed in production: nested Awarding Agency and
-    Recipient Name alongside the rest of a realistic award. Nothing in raw.fields
-    should be a dict/list once mapping is done — that's what intelligence_sync.py's
-    _validate_connector_fields() would otherwise reject at sync time."""
+# --- Nested-object shape, incident 2: NAICS (and, proactively, every other
+# classification/location-code field) --------------------------------------------
+#
+# ValueError: USAspending.gov connector produced a dict for field 'naics_code', but
+# IntelligenceItem.naics_code is a String column. Live value:
+# {'code': '541330', 'description': 'ENGINEERING SERVICES'}. The contract doc's
+# "string"/"number" type labels have now been wrong twice, so every code/location
+# field below is tested with the object shape too, not just NAICS — see the module
+# docstring's field-by-field audit.
+
+LIVE_NAICS_VALUE = {"code": "541330", "description": "ENGINEERING SERVICES"}
+
+
+def _code_object(code: str, description: str) -> dict:
+    return {"code": code, "description": description}
+
+
+def _fully_nested_award(**overrides) -> dict:
+    """A worst-case-realistic live payload: every field that has ever been confirmed
+    or is plausibly nested (by the same structural pattern) arrives as an object at
+    once, not just one at a time."""
+    base = {
+        "Awarding Agency": _nested_agency("Department of Defense", "department-of-defense"),
+        "Awarding Sub Agency": _nested_agency("Department of the Army", "department-of-the-army"),
+        "Recipient Name": {"name": "ACME ENGINEERING SERVICES LLC", "recipient_hash": "abc-123"},
+        "NAICS": dict(LIVE_NAICS_VALUE),
+        "PSC": _code_object("C219", "ARCHITECT AND ENGINEERING- CONSTRUCTION"),
+        "Place of Performance State Code": _code_object("LA", "Louisiana"),
+        "Place of Performance City Code": _code_object("NEW ORLEANS", "New Orleans"),
+    }
+    base.update(overrides)
+    return _award(**base)
+
+
+def test_extract_code_handles_live_naics_object():
+    assert _extract_code(LIVE_NAICS_VALUE) == "541330"
+
+
+def test_extract_code_handles_flat_string():
+    assert _extract_code("541330") == "541330"
+
+
+def test_extract_code_handles_flat_number():
+    # Place of Performance State/City Code are documented as plain numbers.
+    assert _extract_code(22071) == "22071"
+
+
+def test_extract_code_handles_none():
+    assert _extract_code(None) is None
+
+
+def test_parse_date_does_not_silently_swallow_a_dict():
+    # Must NOT return None (that would be indistinguishable from "no date provided")
+    # — it passes the dict through so _validate_connector_fields() can raise a clear
+    # error instead of this quietly becoming a wrong NULL.
+    value = {"date": "2026-01-15", "certainty": "actual"}
+    assert _parse_date(value) is value
+
+
+def test_field_mapping_extracts_naics_code_from_exact_live_value():
+    connector = USAspendingConnector()
+    award = _award(**{"NAICS": dict(LIVE_NAICS_VALUE)})
+
+    raw = connector._to_raw_intelligence_item(award, RETRIEVED_AT)
+
+    assert raw.fields["naics_code"] == "541330"
+    assert isinstance(raw.fields["naics_code"], str)
+    # The description isn't discarded — it's still in the untouched raw payload that
+    # becomes IntelligenceItem.raw_metadata.
+    assert raw.raw["NAICS"]["description"] == "ENGINEERING SERVICES"
+
+
+def test_field_mapping_extracts_psc_code_from_nested_object():
+    connector = USAspendingConnector()
+    award = _award(**{"PSC": _code_object("C219", "ARCHITECT AND ENGINEERING- CONSTRUCTION")})
+
+    raw = connector._to_raw_intelligence_item(award, RETRIEVED_AT)
+
+    assert raw.fields["psc_code"] == "C219"
+    assert isinstance(raw.fields["psc_code"], str)
+
+
+def test_field_mapping_extracts_place_of_performance_codes_from_nested_objects():
     connector = USAspendingConnector()
     award = _award(
         **{
-            "Awarding Agency": _nested_agency("Department of Defense", "department-of-defense"),
-            "Awarding Sub Agency": _nested_agency("Department of the Army", "department-of-the-army"),
-            "Recipient Name": {"name": "ACME ENGINEERING SERVICES LLC", "recipient_hash": "abc-123"},
+            "Place of Performance State Code": _code_object("LA", "Louisiana"),
+            "Place of Performance City Code": _code_object("NEW ORLEANS", "New Orleans"),
         }
     )
 
     raw = connector._to_raw_intelligence_item(award, RETRIEVED_AT)
 
+    assert raw.fields["location_state"] == "LA"
+    assert raw.fields["location_city"] == "NEW ORLEANS"
+
+
+def test_field_mapping_survives_full_production_shaped_award():
+    """The exact combination production can send: every nested-prone field arriving as
+    an object at once (Awarding Agency, Awarding Sub Agency, Recipient Name, NAICS,
+    PSC, Place of Performance State/City Code). Nothing in raw.fields should be a
+    dict/list once mapping is done — that's what intelligence_sync.py's
+    _validate_connector_fields() would otherwise reject at sync time."""
+    connector = USAspendingConnector()
+    raw = connector._to_raw_intelligence_item(_fully_nested_award(), RETRIEVED_AT)
+
     for key, value in raw.fields.items():
         assert not isinstance(value, (dict, list)), f"field '{key}' is still a {type(value).__name__}: {value!r}"
     assert raw.fields["agency_name"] == "Department of Defense"
     assert raw.fields["awardee_name"] == "ACME ENGINEERING SERVICES LLC"
+    assert raw.fields["naics_code"] == "541330"
+    assert raw.fields["psc_code"] == "C219"
+    assert raw.fields["location_state"] == "LA"
+    assert raw.fields["location_city"] == "NEW ORLEANS"
 
 
 # --- End-to-end through the real pipeline ------------------------------------------
@@ -169,12 +263,7 @@ def _seeded_usaspending_source(db) -> IntelligenceSource:
 def test_run_sync_persists_production_shaped_award_end_to_end(db, monkeypatch):
     connector = get_intelligence_connector("usaspending")
     assert isinstance(connector, USAspendingConnector)
-    award = _award(
-        **{
-            "Awarding Agency": _nested_agency("Department of Defense", "department-of-defense"),
-            "Recipient Name": {"name": "ACME ENGINEERING SERVICES LLC", "recipient_hash": "abc-123"},
-        }
-    )
+    award = _fully_nested_award()
     monkeypatch.setattr(connector, "fetch", lambda since, **filters: [connector._to_raw_intelligence_item(award, RETRIEVED_AT)])
 
     source = _seeded_usaspending_source(db)
@@ -189,13 +278,17 @@ def test_run_sync_persists_production_shaped_award_end_to_end(db, monkeypatch):
     item = db.execute(select(IntelligenceItem).where(IntelligenceItem.external_id == "987654")).scalars().one()
     assert item.agency_name == "Department of Defense"
     assert item.awardee_name == "ACME ENGINEERING SERVICES LLC"
+    assert item.naics_code == "541330"
+    assert item.psc_code == "C219"
+    assert item.location_state == "LA"
     assert item.intelligence_category == IntelligenceCategory.AWARD_INTELLIGENCE
     assert item.opportunity_id is None  # AWARD_INTELLIGENCE never promotes
+    assert item.raw_metadata["NAICS"]["description"] == "ENGINEERING SERVICES"  # not discarded
 
 
 def test_run_sync_processing_same_award_twice_updates_not_duplicates(db, monkeypatch):
     connector = get_intelligence_connector("usaspending")
-    award = _award(**{"Awarding Agency": _nested_agency("Department of Defense", "department-of-defense")})
+    award = _fully_nested_award()
     monkeypatch.setattr(connector, "fetch", lambda since, **filters: [connector._to_raw_intelligence_item(award, RETRIEVED_AT)])
 
     source = _seeded_usaspending_source(db)
@@ -209,6 +302,7 @@ def test_run_sync_processing_same_award_twice_updates_not_duplicates(db, monkeyp
 
     rows = db.execute(select(IntelligenceItem).where(IntelligenceItem.external_id == "987654")).scalars().all()
     assert len(rows) == 1
+    assert rows[0].naics_code == "541330"
 
 
 def test_run_sync_with_updated_amount_reflects_latest_value_on_resync(db, monkeypatch):
