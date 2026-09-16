@@ -22,6 +22,7 @@ def _default_stage(db: Session) -> PipelineStage | None:
 
 def create_opportunity(db: Session, data: OpportunityCreate, created_by: User) -> Opportunity:
     payload = data.model_dump()
+    source_item_id = payload.pop("source_intelligence_item_id", None)
     if payload.get("pipeline_stage_id") is None:
         stage = _default_stage(db)
         payload["pipeline_stage_id"] = stage.id if stage else None
@@ -30,6 +31,11 @@ def create_opportunity(db: Session, data: OpportunityCreate, created_by: User) -
     opp.is_sdvosb_setaside = opp.set_aside == SetAsideType.SDVOSB
     db.add(opp)
     db.flush()
+
+    if source_item_id is not None:
+        source_item = db.get(IntelligenceItem, source_item_id)
+        if source_item is not None:
+            source_item.opportunity_id = opp.id
 
     log_activity(db, opp.id, ActivityType.CREATED, f"Opportunity created by {created_by.full_name}", actor_id=created_by.id)
     calculate_score(db, opp)

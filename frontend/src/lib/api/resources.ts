@@ -208,6 +208,7 @@ export interface IntelligenceItemListParams {
   category?: string;
   source_id?: string;
   jurisdiction_level?: string;
+  agency_id?: string;
   state?: string;
   naics_code?: string;
   maturity_stage?: string;

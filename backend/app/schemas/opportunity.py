@@ -43,7 +43,13 @@ class OpportunityBase(BaseModel):
 
 
 class OpportunityCreate(OpportunityBase):
-    pass
+    # Set only by Discover's "Track Opportunity" action — links the new Opportunity
+    # back to the IntelligenceItem it came from (the same IntelligenceItem.opportunity_id
+    # column the automatic sync-time promotion path already writes; see
+    # app/services/intelligence_sync.py::promote_intelligence_item()), so Discover can
+    # show "Tracked" instead of offering to create a duplicate. Never persisted on
+    # Opportunity itself -- see create_opportunity()'s handling below.
+    source_intelligence_item_id: UUID | None = None
 
 
 class OpportunityUpdate(BaseModel):
