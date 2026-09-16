@@ -30,17 +30,36 @@ connected to a real database and a real backend. It covers:
 10. Revenue forecasting — weighted pipeline value, by month/quarter/agency/market.
 11. A document library on every opportunity, with an AI tool that reads an uploaded
     RFP/RFQ and pulls out the scope, deadlines, evaluation factors, and red flags.
-12. A real connector to SAM.gov (the federal opportunity database) — it just needs
-    a key, see below.
-13. That same AI-reading tool, ready to go as soon as an AI provider key is added.
-14. A set of realistic **SAMPLE opportunities** so you can see the app in action —
+12. That same AI-reading tool, ready to go as soon as an AI provider key is added.
+13. A set of realistic **SAMPLE opportunities** so you can see the app in action —
     every one of them is clearly labeled `SAMPLE DATA` so it's never confused with
     a real pursuit.
+14. **A multi-source intelligence platform**, not just a SAM.gov tracker:
+    - The **Source Registry** (`Intelligence Sources` in the sidebar) tracks every
+      public source worth watching — SAM.gov, USAspending.gov, and Grants.gov are
+      wired up and working today; dozens more (Louisiana state/local sources, USACE
+      districts, federal forecasts, funding programs) are registered with an honest
+      "needs configuration" status so nothing is faked.
+    - Every incoming item is tagged **Live Opportunity**, **Pre-Solicitation**,
+      **Early Signal**, or **Award Intelligence** — only the first two ever become a
+      pipeline opportunity; early signals and competitor award history stay
+      intelligence-only until they're genuinely relevant.
+    - The **Discover** page is a filterable, sortable feed across all of that.
+    - A deterministic **Early Signal Score** estimates how likely a signal is to
+      turn into a real pursuit — separate from, and answering a different question
+      than, the Principal Pursuit Score.
+    - Possible duplicate reports of the same real-world project (e.g. an early
+      funding signal that later becomes a live solicitation) are proposed, never
+      auto-merged, and show up as a **Project Intelligence Timeline** on the
+      opportunity's own page once one of them is promoted.
+    - The Dashboard's new Intelligence section surfaces what's new since your last
+      visit and which early signals deserve attention before a competitor gets there
+      first.
 
-The full long-term vision (early-signal detection, teaming-partner search, a
-conversational AI assistant, an interactive opportunity map, and more) is documented
-in `docs/ROADMAP.md`, sequenced into phases. This build is the foundation everything
-else gets layered onto.
+See `docs/PHASE2_ARCHITECTURE.md` for the full design of all of this. The remaining
+long-term vision (teaming-partner search, a conversational AI assistant, an
+interactive opportunity map, and more) is documented in `docs/ROADMAP.md`, sequenced
+into phases.
 
 ## Two things only you can do
 
