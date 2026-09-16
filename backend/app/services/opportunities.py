@@ -9,7 +9,7 @@ from app.models.pipeline import PipelineStage
 from app.models.user import User
 from app.schemas.opportunity import OpportunityCreate, OpportunityUpdate
 from app.services.activities import log_activity
-from app.services.ingestion import SYNCABLE_FIELDS
+from app.services.intelligence_sync import SYNCABLE_FIELDS
 from app.services.scoring import calculate_score
 
 

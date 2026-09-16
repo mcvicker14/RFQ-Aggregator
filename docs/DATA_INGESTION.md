@@ -1,41 +1,69 @@
 # Data Ingestion Architecture
 
+For the full multi-source design (Source Registry, intelligence categories,
+deduplication, sync logging) see `docs/PHASE2_ARCHITECTURE.md` — this doc is the
+"how it actually works today" reference.
+
 ## Connector framework
 
 ```python
-class OpportunityConnector(ABC):
+class IntelligenceConnector(ABC):
+    key: str            # matches intelligence_sources.connector_key
     name: str
-    def fetch(self, since: date, **filters) -> list[RawOpportunity]: ...
-    def normalize(self, raw: RawOpportunity) -> OpportunityCreate: ...
+    default_category: IntelligenceCategory
+
+    def is_configured(self) -> bool: ...
+    def fetch(self, since: date, **filters) -> list[RawIntelligenceItem]: ...
 ```
 
-Each connector lives in `backend/app/connectors/<name>.py`, is registered in
-`backend/app/connectors/registry.py`, and is invoked by
-`backend/app/services/ingestion.py`, which:
+Each connector lives in `backend/app/connectors/<name>.py` and is registered in
+`backend/app/connectors/registry.py`, keyed by the same string as its
+`intelligence_sources.connector_key` row (the Source Registry — see
+`docs/PHASE2_ARCHITECTURE.md` §3). A registry row with no matching connector simply
+has no working code yet; that's a normal, expected state for a source that's
+documented but not yet automatable (§8), not an error.
 
-1. Calls `fetch()`.
-2. De-duplicates against existing `opportunities` (by `solicitation_number` +
-   `agency_id`, falling back to a title/agency/date fuzzy match).
-3. Inserts new opportunities at stage "Signal Detected" and updates changed fields on
-   existing ones (never silently overwrites a field a human has since edited by hand —
-   see "field ownership" below).
-4. Writes an `opportunity_sources` row every time, so every ingested fact is traceable.
-5. Generates an `alert` for each new match against a user's saved alert rules.
+`backend/app/services/intelligence_sync.py::run_sync()` is what actually invokes a
+connector, for every source, whether triggered from the Source Manager UI's "Sync
+Now"/"Sync All Enabled Sources" or (in the future) a schedule:
 
-**Field ownership:** once a human edits a field on an opportunity that ingestion also
-populates (e.g. `estimated_value`), that field is marked `locked_by_user = true` in an
-edit-tracking column and future syncs stop overwriting it, only flagging a conflict as
-an activity-log entry. This avoids the common integration failure mode where a nightly
-sync clobbers a BD staffer's research.
+1. Guards against two syncs running concurrently for the same source.
+2. Calls `connector.fetch(since)`. A configuration or fetch failure is caught and
+   logged — it marks the source unhealthy and the run failed, but never raises past
+   `run_sync()`, so one bad source can't abort a "sync all" pass.
+3. Upserts each returned item into `intelligence_items`, keyed on
+   `(intelligence_source_id, external_id)` — de-duplication *within* one source.
+   Cross-source de-duplication (the same real project reported by two different
+   sources) is a separate, human-reviewable process — `app/services/dedup.py` — that
+   only ever proposes a likely/possible match, never merges automatically.
+4. If the item's `intelligence_category` is `LIVE_OPPORTUNITY` or
+   `PRE_SOLICITATION`, promotes it into the existing `opportunities` pipeline
+   (`intelligence_sync.py::promote_intelligence_item`) — inserting at pipeline stage
+   "Signal Detected" for a new one, or updating changed fields on an existing one.
+   `EARLY_SIGNAL` and `AWARD_INTELLIGENCE` items are never promoted; they stay
+   intelligence-only.
+5. **Field ownership is unchanged from the original design**: once a human edits a
+   field an ingestion connector also populates, that field name is added to the
+   opportunity's own `locked_fields` list, and every future sync leaves it alone
+   rather than overwriting a BD staffer's research.
+6. Writes an `opportunity_sources` row on every promotion, so every ingested fact on
+   an opportunity stays traceable exactly as before — this table and its meaning are
+   untouched by Phase 2.
+7. Logs one `intelligence_sync_runs` row per attempt (fetched/created/updated/errored
+   counts, status, error detail) for the Source Manager UI's history view.
 
-## Connectors implemented in this MVP
+## Connectors implemented today
 
 ### SAM.gov (`backend/app/connectors/sam_gov.py`)
 
 Real integration against the public **SAM.gov Get Opportunities v2 API**
-(`https://api.sam.gov/prod/opportunities/v2/search`), which covers Solicitations,
-Presolicitations, Combined Synopsis/Solicitation, Sources Sought, and Special Notices —
-i.e. spec §2's SAM.gov, Sources Sought, RFI, and Presolicitation sources in one API.
+(`https://api.sam.gov/prod/opportunities/v2/search`), covering Solicitations,
+Presolicitations, Combined Synopsis/Solicitation, Sources Sought, Special Notices, and
+Award Notices — mapped to an intelligence category per SAM.gov's own notice `type`
+(solicitations → `LIVE_OPPORTUNITY`, presolicitation/sources-sought/special →
+`PRE_SOLICITATION`, award notices → `AWARD_INTELLIGENCE`; anything unrecognized
+defaults to `LIVE_OPPORTUNITY`, preserving this connector's original behavior from
+before Phase 2, when every notice became a pipeline opportunity).
 
 - **Auth:** query parameter `api_key`, read from the `SAM_GOV_API_KEY` environment
   variable. Principal Engineering obtains this by signing in at sam.gov, opening
@@ -43,40 +71,41 @@ i.e. spec §2's SAM.gov, Sources Sought, RFI, and Presolicitation sources in one
   vendor contract.
 - **Request:** `postedFrom`/`postedTo` (required by the API, max 1-year span — the
   connector pages backward in ≤1-year windows if a longer backfill is requested),
-  `limit`/`offset` for pagination, optional `ncode` (NAICS), `state`, `title`, `ptype`
-  filters. `backend/app/connectors/sam_gov.py` also accepts an app-level NAICS/keyword
-  filter list (seeded with Principal's markets — civil, water/wastewater, environmental
-  engineering NAICS codes) so a sync doesn't pull in irrelevant notices.
+  `limit`/`offset` for pagination, and `ncode` (NAICS, defaulting to Principal's
+  primary + secondary codes).
 - **Response parsing is defensive on purpose.** This sandbox's network egress allowlist
   blocks documentation sites, so the field mapping in `sam_gov.py` was written from
   well-established public knowledge of this stable API rather than a live fetch of the
-  current schema. The parser reads fields with `.get()` and tolerates missing/renamed
-  keys instead of crashing, logs any notice it can't fully map, and the module docstring
-  says explicitly: **verify field names against the live SAM.gov API response the first
-  time real ingestion is run**, and adjust `_map_fields()` if anything has drifted.
-- **Rate limits:** SAM.gov gives non-federal accounts on the order of 10 calls/day. The
-  sync endpoint is manually triggered (a "Sync Now" button on `/discover`) rather than
-  polling continuously, and the service caches the last sync window to avoid redundant
-  calls.
-- **Without a key configured:** `POST /api/ingestion/sam-gov/sync` returns
-  `503 {"detail": "SAM.gov integration is not configured. Add SAM_GOV_API_KEY to the
-  backend environment."}`. The `/discover` page shows this state plainly with setup
-  instructions, and still allows manual opportunity entry.
+  current schema — verified instead with realistic fixture payloads
+  (`backend/tests/test_sam_gov_connector.py`). The parser reads fields with `.get()`
+  and tolerates missing/renamed keys instead of crashing, and logs any notice it can't
+  fully map rather than fabricating one. **Verify field names against a real SAM.gov
+  sync's `raw_metadata` the first time it runs in production**, and adjust
+  `_to_raw_intelligence_item()` if anything has drifted.
+- **Without a key configured:** a sync attempt fails with a clear "not configured"
+  error, the source's health status shows `needs_configuration` in the Source Manager
+  UI, and the rest of the app is unaffected.
 
-## Connectors documented but not implemented (Phase 2+)
+### USAspending.gov and Grants.gov
 
-Everything else in long-term spec §2 (USASpending/FPDS, state/parish/municipal
-procurement portals, agency forecasts, FEMA/USACE/VA program announcements, grants,
-appropriations) gets a connector class later using the same `OpportunityConnector`
-interface. Several of these (most state/municipal portals) have no public API and would
-need either a manual-entry workflow or a scraper built in compliance with that site's
-terms of service — the framework supports both, but per instructions this build does not
-scrape any site whose terms would prohibit it.
+See `docs/PHASE2_ARCHITECTURE.md` §8 for what's implemented and why (both are stable,
+keyless public APIs — no new secret to manage for either).
 
-## Provenance (spec §27)
+## Sources documented but not yet implemented
 
-See `docs/DATABASE_SCHEMA.md` §Provenance. This is enforced at the service layer, not
-just convention: `ingestion.py` and the AI analysis service are the only two code paths
-allowed to write `confidence != "verified_fact"`, and both are required (by a check in
-`services/opportunities.py`) to also write `source`/`source_url`/`retrieved_at` in the
-same transaction as the fact they're recording.
+See `docs/PHASE2_ARCHITECTURE.md` §8 for the full Wave 1 triage — every source named
+in the Phase 2 spec is registered in the Source Registry with an honest status
+(`needs_configuration`/`manual_only`) and research notes, even where no connector
+exists yet. Several (most state/municipal portals) have no confirmed public API and
+would need either a manual-entry workflow or a scraper built in compliance with that
+site's terms of service — the framework supports both, but this build does not scrape
+any site whose access method/terms haven't been verified first.
+
+## Provenance
+
+See `docs/DATABASE_SCHEMA.md` §Provenance and `docs/PHASE2_ARCHITECTURE.md` §3. Every
+`intelligence_items` row carries `source`/`source_url`/`retrieved_at`/`confidence`
+(the same shape as `ProvenanceMixin`, used identically on `Opportunity`) plus
+`raw_metadata`, the full original payload, for audit. `intelligence_sync.py` and the
+AI analysis service remain the only code paths allowed to write
+`confidence != "verified_fact"`.

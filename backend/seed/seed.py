@@ -49,6 +49,7 @@ from app.services.activities import log_activity  # noqa: E402
 from app.services.gonogo import get_or_create_review, record_decision, upsert_criteria_scores  # noqa: E402
 from app.schemas.gonogo import GoNoGoCriteriaScoreUpsert  # noqa: E402
 from app.services.scoring import calculate_score  # noqa: E402
+from seed.intelligence_sources import seed_intelligence_sources  # noqa: E402
 
 settings = get_settings()
 TODAY = date.today()
@@ -546,6 +547,7 @@ def main():
     db = SessionLocal()
     try:
         seed_reference_data(db)
+        seed_intelligence_sources(db)
 
         password = args.admin_password or os.environ.get("ADMIN_INITIAL_PASSWORD")
         generated = password is None

@@ -39,8 +39,11 @@ full matrix); "any" = any authenticated user.
 | `GET /api/alerts` | Current user's in-app alerts | any |
 | `PATCH /api/alerts/{id}/read` | Mark read | any |
 | `GET/PATCH /api/alert-rules` | User's alert preferences | any |
-| `POST /api/ingestion/sam-gov/sync` | Trigger SAM.gov sync (or 503 if unconfigured) | BD+ |
-| `GET /api/ingestion/sam-gov/status` | Last sync time, configured?, result counts | any |
+| `GET /api/intelligence/sources` | Source Registry listing (status, health, coverage) | any |
+| `PATCH /api/intelligence/sources/{id}` | Enable/disable a source, edit notes | Administrator |
+| `POST /api/intelligence/sources/{id}/sync` | Trigger one source's sync (400 if no connector, 409 if already running) | BD+ |
+| `POST /api/intelligence/sync-all` | Sync every enabled, connected source | BD+ |
+| `GET /api/intelligence/sync-runs` | Recent sync history, optionally filtered by source | any |
 | `GET/PATCH /api/settings/scoring-weights` | Scoring weight profile | any / Administrator |
 | `GET/POST /api/users` | User admin | any (list) / Administrator (create) |
 | `GET /api/health` | Liveness/readiness (DB connectivity) | public |

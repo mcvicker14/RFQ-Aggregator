@@ -100,14 +100,20 @@ future scheduled ingestion job).
 
 ### Connector framework (for section "data ingestion")
 
-`backend/app/connectors/base.py` defines an abstract `OpportunityConnector` with a
-single method, `fetch(since: date) -> list[RawOpportunity]`. Each data source (SAM.gov
-today; USASpending, state portals, agency forecasts, etc. in later phases) implements
-this interface and is registered in `backend/app/connectors/registry.py`. The ingestion
-service normalizes whatever a connector returns into the common `Opportunity` model and
-**always writes an `OpportunitySource` provenance record** (source name, source URL,
-retrieved date, confidence) — see `docs/DATA_INGESTION.md`. Adding a new source later
-means writing one new connector class; nothing else in the app changes.
+`backend/app/connectors/base.py` defines an abstract `IntelligenceConnector` with a
+single method, `fetch(since: date) -> list[RawIntelligenceItem]`. Each data source
+(SAM.gov, USAspending.gov, Grants.gov today; more in later waves) implements this
+interface and is registered in `backend/app/connectors/registry.py`, keyed to a row in
+the `intelligence_sources` table (the Source Registry). `app/services/
+intelligence_sync.py` normalizes whatever a connector returns into the common
+`IntelligenceItem` model, tagged with an `intelligence_category` that decides whether
+it's eligible for promotion into the existing `Opportunity`/pipeline model — only
+`LIVE_OPPORTUNITY`/`PRE_SOLICITATION` items are; `EARLY_SIGNAL`/`AWARD_INTELLIGENCE`
+items stay intelligence-only. A promoted opportunity still **always gets an
+`OpportunitySource` provenance record** exactly as before. Adding a new source later
+means writing one new connector class and a Source Registry row; nothing else in the
+app changes. See `docs/PHASE2_ARCHITECTURE.md` for the full design and
+`docs/DATA_INGESTION.md` for how a sync actually runs.
 
 ### AI solicitation reader
 

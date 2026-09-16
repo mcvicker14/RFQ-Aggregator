@@ -17,16 +17,20 @@ sample data.
 - TanStack Query on the frontend if client-side caching/revalidation needs grow beyond
   what plain fetch + React state comfortably handles.
 
-## Phase 2 — the next four modules named in the long-term spec
+## Phase 2 — multi-source intelligence platform (in progress)
 
-1. **Early Signals** (spec §3) — dedicated table + UI for pre-solicitation signals
-   (appropriations, CIPs, environmental assessments, bond issues) feeding the
-   `maturity_stage` field the MVP already has on `opportunities`.
-2. **USASpending / FPDS ingestion** — a second `OpportunityConnector` implementation;
-   feeds Agency Intelligence and Recompete Tracker with real historical award data.
-3. **Recompete Tracker** (spec §11) — `contracts`/`contract_awards`/`recompetes` tables,
+Superseded this section's original plan — see `docs/PHASE2_ARCHITECTURE.md` for the
+actual design and status: a generalized `IntelligenceConnector` framework, a Source
+Registry covering every Wave 1 source named in the spec (SAM.gov, USAspending.gov,
+Grants.gov built; the rest registered with honest not-yet-built status), the
+`intelligence_items` universal landing table (feeding early-signal detection and
+award/competitor intelligence without changing `opportunities`), deduplication, and
+sync logging. Remaining items from the original Phase 2 plan below are still ahead of
+Phase 3:
+
+1. **Recompete Tracker** (spec §11) — `contracts`/`contract_awards`/`recompetes` tables,
    expiration-window estimation, alerting 12–24 months out.
-4. **Teaming Partner intelligence** (spec §9) — natural-language partner search over the
+2. **Teaming Partner intelligence** (spec §9) — natural-language partner search over the
    `companies` table ("find architectural partners with VA hospital experience in the
    Southeast") using embeddings once there's enough company data to make retrieval
    meaningful.

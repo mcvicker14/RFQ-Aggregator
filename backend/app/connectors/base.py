@@ -1,11 +1,6 @@
 """Connector framework. Each external data source implements IntelligenceConnector;
 new sources plug in without touching the sync orchestrator, dedup engine, or any
 route. See docs/PHASE2_ARCHITECTURE.md §5 and docs/DATA_INGESTION.md.
-
-`OpportunityConnector`/`RawOpportunity` (below `IntelligenceConnector`) are the
-pre-Phase-2 interface, still used by the not-yet-migrated `SamGovConnector`. They are
-retired in the same change that migrates SAM.gov onto `IntelligenceConnector` — kept
-here only for that transition, not as a second permanent interface.
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -57,29 +52,3 @@ class IntelligenceConnector(ABC):
         raise for an individual malformed item — log and skip it instead, the way
         SamGovConnector._to_raw_intelligence_item already does, so one bad record
         doesn't fail an entire sync."""
-
-
-@dataclass
-class RawOpportunity:
-    """Pre-Phase-2 interface — see module docstring. `raw` keeps the original payload
-    for the provenance log."""
-
-    external_id: str
-    source: str
-    source_url: str | None
-    retrieved_at: datetime
-    fields: dict  # already-normalized keys matching OpportunityCreate, best-effort
-    raw: dict = field(default_factory=dict)
-    confidence: str = "verified_fact"
-
-
-class OpportunityConnector(ABC):
-    name: str
-
-    @abstractmethod
-    def is_configured(self) -> bool: ...
-
-    @abstractmethod
-    def fetch(self, since: date, **filters) -> list[RawOpportunity]:
-        """Return newly discovered/updated notices since `since`. Raises
-        ConnectorNotConfiguredError if required credentials are missing."""

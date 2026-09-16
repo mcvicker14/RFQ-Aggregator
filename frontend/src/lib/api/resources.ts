@@ -11,6 +11,8 @@ import type {
   ForecastSummary,
   GoNoGoCriteriaScore,
   GoNoGoReview,
+  IntelligenceSource,
+  IntelligenceSyncRun,
   NaicsCode,
   Opportunity,
   OpportunityCompanyLink,
@@ -20,6 +22,7 @@ import type {
   OpportunityScore,
   PipelineStage,
   RevenueForecast,
+  SyncAllResult,
   Task,
   User,
   WinLossReview,
@@ -182,15 +185,15 @@ export const alertsApi = {
   markRead: (id: string) => api.patch<Alert>(`/api/alerts/${id}/read`),
 };
 
-// --- Ingestion ----------------------------------------------------------------------
-export const ingestionApi = {
-  samGovStatus: () => api.get<{ connector: string; configured: boolean; detail: string | null }>(
-    "/api/ingestion/sam-gov/status"
-  ),
-  samGovSync: (sinceDays = 30) =>
-    api.post<{ created: number; updated: number; unchanged: number; total_fetched: number }>(
-      `/api/ingestion/sam-gov/sync${buildQuery({ since_days: sinceDays })}`
-    ),
+// --- Intelligence sources (Source Registry) -----------------------------------------
+export const intelligenceApi = {
+  listSources: () => api.get<IntelligenceSource[]>("/api/intelligence/sources"),
+  updateSource: (id: string, data: { is_enabled?: boolean; polling_frequency_hours?: number | null; notes?: string }) =>
+    api.patch<IntelligenceSource>(`/api/intelligence/sources/${id}`, data),
+  syncSource: (id: string) => api.post<IntelligenceSyncRun>(`/api/intelligence/sources/${id}/sync`),
+  syncAll: () => api.post<SyncAllResult>("/api/intelligence/sync-all"),
+  syncRuns: (sourceId?: string, limit = 50) =>
+    api.get<IntelligenceSyncRun[]>(`/api/intelligence/sync-runs${buildQuery({ source_id: sourceId, limit })}`),
 };
 
 // --- Settings -----------------------------------------------------------------------

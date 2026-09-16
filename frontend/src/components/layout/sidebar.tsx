@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Search,
+  Radar,
   Briefcase,
   Columns3,
   CheckSquare,
@@ -19,6 +20,7 @@ import { cn } from "@/lib/utils";
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/discover", label: "Discover", icon: Search },
+  { href: "/sources", label: "Intelligence Sources", icon: Radar },
   { href: "/opportunities", label: "Opportunities", icon: Briefcase },
   { href: "/pipeline", label: "Pipeline", icon: Columns3 },
   { href: "/tasks", label: "Tasks", icon: CheckSquare },

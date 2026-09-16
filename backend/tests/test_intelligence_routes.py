@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.connectors import registry
 from app.connectors.base import IntelligenceConnector, RawIntelligenceItem
@@ -117,6 +118,18 @@ def test_sync_source_missing_returns_404(client, db):
 
 
 def test_sync_all_endpoint_reports_results(client, db, fake_connector):
+    # Disable every other enabled+connected source first (within this test's own
+    # transaction, rolled back after) so this assertion holds regardless of what the
+    # Source Registry seed has already committed to the shared local database — e.g.
+    # SAM.gov is enabled by seed_intelligence_sources but has no connector registered
+    # in this test process, which would otherwise show up as a second attempted source.
+    for other in db.execute(
+        select(IntelligenceSource).where(
+            IntelligenceSource.is_enabled.is_(True), IntelligenceSource.connector_key.isnot(None)
+        )
+    ).scalars().all():
+        other.is_enabled = False
+
     _source(db)
     db.commit()
 

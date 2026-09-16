@@ -78,6 +78,13 @@ export type DocumentCategory =
   | "debrief"
   | "award_document"
   | "other";
+export type IntelligenceCategory = "live_opportunity" | "pre_solicitation" | "early_signal" | "award_intelligence";
+export type JurisdictionLevel = "federal" | "state" | "local" | "regional" | "private";
+export type ConnectorType = "api" | "rss" | "structured_file" | "csv" | "html_scrape" | "pdf_parse" | "manual";
+export type SourceHealthStatus = "never_run" | "healthy" | "degraded" | "failing" | "needs_configuration" | "manual_only";
+export type SyncRunStatus = "running" | "success" | "partial_failure" | "failure";
+export type SyncTriggeredBy = "manual" | "scheduled";
+
 export type AlertCategory =
   | "new_matching_opportunity"
   | "new_sources_sought"
@@ -464,4 +471,49 @@ export interface WinLossReview {
 
 export interface ApiError {
   detail: string;
+}
+
+export interface IntelligenceSource {
+  id: string;
+  name: string;
+  organization: string | null;
+  jurisdiction_level: JurisdictionLevel;
+  geographic_coverage: string | null;
+  source_url: string | null;
+  api_url: string | null;
+  connector_type: ConnectorType;
+  connector_key: string | null;
+  requires_auth: boolean;
+  auth_notes: string | null;
+  is_enabled: boolean;
+  polling_frequency_hours: number | null;
+  last_attempted_sync_at: string | null;
+  last_successful_sync_at: string | null;
+  last_result_count: number | null;
+  last_error: string | null;
+  health_status: SourceHealthStatus;
+  terms_notes: string | null;
+  default_intelligence_category: IntelligenceCategory | null;
+  notes: string | null;
+}
+
+export interface IntelligenceSyncRun {
+  id: string;
+  intelligence_source_id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: SyncRunStatus;
+  items_fetched: number;
+  items_created: number;
+  items_updated: number;
+  items_unchanged: number;
+  items_errored: number;
+  error_detail: string | null;
+  triggered_by: SyncTriggeredBy;
+}
+
+export interface SyncAllResult {
+  sources_attempted: number;
+  sources_succeeded: number;
+  sources_skipped: string[];
 }
