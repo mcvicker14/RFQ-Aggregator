@@ -276,22 +276,131 @@ def _fake_response(payload: dict, status_code: int = 200) -> httpx.Response:
     return httpx.Response(status_code, json=payload)
 
 
-def test_fetch_queries_naics_family_prefix_and_all_substantive_notice_types(monkeypatch):
+def test_fetch_runs_diagnostic_probes_then_queries_each_naics_code_separately(monkeypatch):
+    # Regression test for the round-2 incident: ncode is documented as one exact code,
+    # not a prefix or a combined list, and ptype must be repeated query keys, not
+    # comma-joined. This proves fetch() actually sends requests that way, plus runs
+    # the three diagnostic probes first.
     captured = []
 
     def fake_request(client, method, url, params=None, **kwargs):
-        captured.append(params)
+        captured.append(dict(params))
         return _fake_response({"opportunitiesData": [], "totalRecords": 0, "page_metadata": {"hasNext": False}})
 
     monkeypatch.setattr(sam_gov_module, "request_with_retry", fake_request)
     monkeypatch.setattr(sam_gov_module.settings, "SAM_GOV_API_KEY", "test-key")
 
-    SamGovConnector().fetch(since=date.today() - timedelta(days=30))
+    connector = SamGovConnector()
+    connector.fetch(since=date.today() - timedelta(days=30))
 
-    assert captured, "expected at least one request to SAM.gov"
-    params = captured[0]
-    assert "5413" in params["ncode"].split(",")
-    assert set(params["ptype"].split(",")) == {"o", "p", "k", "r", "s", "a"}
+    # Probes: A (baseline, no ncode/ptype), B (+ exact 541330), C (+ ptype list).
+    probe_a, probe_b, probe_c = captured[0], captured[1], captured[2]
+    assert "ncode" not in probe_a and "ptype" not in probe_a
+    assert probe_b["ncode"] == "541330" and "ptype" not in probe_b
+    assert probe_c["ncode"] == "541330"
+    assert probe_c["ptype"] == sam_gov_module.NOTICE_TYPE_CODES
+
+    # Every call after the 3 probes is a real per-NAICS-code retrieval query.
+    real_calls = captured[3:]
+    expected_codes = set(sam_gov_module.DEFAULT_NAICS_FILTER) | set(sam_gov_module.settings.PRINCIPAL_SECONDARY_NAICS)
+    assert {c["ncode"] for c in real_calls} == expected_codes
+    for call in real_calls:
+        assert isinstance(call["ncode"], str) and "," not in call["ncode"]  # one exact code, never combined
+        assert call["ptype"] == sam_gov_module.NOTICE_TYPE_CODES  # a list, not a comma-joined string
+
+    # Never leaks the API key into anything the connector records for diagnostics.
+    assert "test-key" not in str(connector.last_run_diagnostics)
+
+
+def test_probe_never_returns_the_api_key(monkeypatch):
+    def fake_request(client, method, url, params=None, **kwargs):
+        assert params["api_key"] == "super-secret-key"  # the request itself still needs it
+        return _fake_response({"opportunitiesData": [], "totalRecords": 42})
+
+    monkeypatch.setattr(sam_gov_module, "request_with_retry", fake_request)
+    monkeypatch.setattr(sam_gov_module.settings, "SAM_GOV_API_KEY", "super-secret-key")
+
+    with httpx.Client() as client:
+        result = sam_gov_module._probe(client, date.today() - timedelta(days=1), date.today())
+
+    assert result == {"status_code": 200, "total_records": 42}
+    assert "super-secret-key" not in str(result)
+
+
+def test_probe_handles_non_200_without_raising(monkeypatch):
+    def fake_request(client, method, url, params=None, **kwargs):
+        return _fake_response({"error": "bad request"}, status_code=400)
+
+    monkeypatch.setattr(sam_gov_module, "request_with_retry", fake_request)
+    monkeypatch.setattr(sam_gov_module.settings, "SAM_GOV_API_KEY", "test-key")
+
+    with httpx.Client() as client:
+        result = sam_gov_module._probe(client, date.today() - timedelta(days=1), date.today())
+
+    assert result["status_code"] == 400
+    assert result["total_records"] is None
+
+
+def test_run_diagnostic_probes_uses_a_full_year_window_regardless_of_since(monkeypatch):
+    captured_windows = []
+
+    def fake_request(client, method, url, params=None, **kwargs):
+        captured_windows.append((params["postedFrom"], params["postedTo"]))
+        return _fake_response({"opportunitiesData": [], "totalRecords": 0})
+
+    monkeypatch.setattr(sam_gov_module, "request_with_retry", fake_request)
+    monkeypatch.setattr(sam_gov_module.settings, "SAM_GOV_API_KEY", "test-key")
+
+    with httpx.Client() as client:
+        probes = sam_gov_module._run_diagnostic_probes(client)
+
+    assert set(probes.keys()) == {"A_baseline_date_range_only", "B_exact_naics_541330", "C_naics_plus_notice_types"}
+    assert len(captured_windows) == 3
+    for posted_from_str, posted_to_str in captured_windows:
+        posted_from = datetime.strptime(posted_from_str, "%m/%d/%Y").date()
+        posted_to = datetime.strptime(posted_to_str, "%m/%d/%Y").date()
+        assert (posted_to - posted_from).days == sam_gov_module.DIAGNOSTIC_PROBE_WINDOW_DAYS
+
+
+def test_fetch_attaches_last_run_diagnostics_with_the_documented_shape(monkeypatch):
+    monkeypatch.setattr(sam_gov_module, "request_with_retry", lambda *a, **kw: _fake_response({"opportunitiesData": [], "totalRecords": 0}))
+    monkeypatch.setattr(sam_gov_module.settings, "SAM_GOV_API_KEY", "test-key")
+
+    connector = SamGovConnector()
+    assert connector.last_run_diagnostics is None  # nothing yet before the first fetch()
+
+    connector.fetch(since=date.today() - timedelta(days=30))
+
+    diagnostics = connector.last_run_diagnostics
+    assert diagnostics is not None
+    assert set(diagnostics["probes"].keys()) == {"A_baseline_date_range_only", "B_exact_naics_541330", "C_naics_plus_notice_types"}
+    retrieval = diagnostics["retrieval"]
+    assert len(retrieval["date_window"]) == 2
+    assert set(retrieval["naics_codes_queried"]) == set(sam_gov_module.DEFAULT_NAICS_FILTER) | set(sam_gov_module.settings.PRINCIPAL_SECONDARY_NAICS)
+    assert retrieval["notice_type_codes"] == sam_gov_module.NOTICE_TYPE_CODES
+    assert set(retrieval["total_records_by_naics"]) == set(retrieval["naics_codes_queried"])
+    assert retrieval["pages_fetched"] >= len(retrieval["naics_codes_queried"])
+    assert retrieval["candidates_before_relevance_filter"] == 0
+    assert retrieval["records_after_relevance_filter"] == 0
+
+
+def test_fetch_deduplicates_the_same_notice_returned_by_multiple_naics_queries(monkeypatch):
+    # A real, multi-disciplinary IDIQ could plausibly satisfy more than one of the
+    # NAICS codes queried separately — must be merged once, not duplicated.
+    notice = _sam_notice(
+        title="Civil Engineering Design Services — Drainage Improvements",
+        fullParentPathName="DEPT OF VETERANS AFFAIRS.VISN 16",
+    )
+    monkeypatch.setattr(
+        sam_gov_module, "request_with_retry",
+        lambda *a, **kw: _fake_response({"opportunitiesData": [notice], "totalRecords": 1}),
+    )
+    monkeypatch.setattr(sam_gov_module.settings, "SAM_GOV_API_KEY", "test-key")
+
+    results = SamGovConnector().fetch(since=date.today() - timedelta(days=30))
+
+    assert len(results) == 1
+    assert results[0].external_id == "abc123"
 
 
 def test_fetch_ranks_best_match_first_drops_expired_and_below_floor(monkeypatch):

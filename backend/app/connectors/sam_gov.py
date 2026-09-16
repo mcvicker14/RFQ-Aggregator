@@ -1,54 +1,59 @@
 """SAM.gov Get Opportunities v2 connector. Real integration against the public
 federal procurement notice API — functional the moment SAM_GOV_API_KEY is set.
 
-**Production incident**: connected and healthy (200 OK, is_configured() true), but a
-manual sync returned 0 items. Investigated against SAM.gov's confirmed API behavior
-(open.gsa.gov itself is blocked by this sandbox's egress allowlist, same as before, but
-its documented parameter names/codes are corroborated by multiple independent
-secondary sources this time, not read from memory alone — see below for what's
-confirmed vs. what's still a reasoned judgment call):
+**Production incident, round 2**: the round-1 fix (broadened NAICS + explicit ptype)
+still produced Fetched 0 / Created 0 against the real API. The user checked the actual
+official GSA API documentation directly — something this sandbox's egress allowlist
+blocks Claude from doing itself — and found two of round 1's assumptions wrong:
 
-- **Base URL, `ncode` param name, `postedFrom`/`postedTo` format and 1-year max span,
-  `offset`/`limit` pagination, `totalRecords`** — all confirmed correct. Not the bug.
-- **No post-fetch bug drops results silently** — `_to_raw_intelligence_item` has no
-  unconditional raise (unlike USAspending's required-field check) and every field read
-  is `.get()`-defensive, so a non-empty API response can't map down to zero here.
-- **The actual cause: the query itself was too narrow to reliably return anything.**
-  The default NAICS filter was 4 *exact* codes (541330 + 3 secondary codes), and
-  `ncode` is confirmed to support prefix matching ("54" = all professional-services
-  NAICS) — exact-coding was leaving real matches on the table by design, and combined
-  with the default 30-day lookback window, zero is a very plausible outcome for a
-  handful of exact codes in a slow week, not evidence of a broken integration.
-  `ptype` (notice type) wasn't being sent at all — omitting it should return every
-  type by default, so it isn't what caused *zero*, but SAM.gov's own type roster
-  includes non-opportunity notice types (Justification & Approval, Sale of Surplus
-  Property, Intent to Bundle) that have no business in this pipeline, so it's now sent
-  explicitly rather than relying on an unstated default staying broad forever.
-- **Deliberately not added**: an `active`/status request parameter. Multiple sources
-  describe SAM.gov's response carrying an `active` field, but none confirm a
-  corresponding *request* parameter or its default behavior — given this project has
-  now hit two production incidents from trusting an unverified field-shape claim
-  (see app/connectors/usaspending.py), a third guessed parameter isn't worth the risk.
-  Staleness is instead handled from data already in the response — see
-  `_is_expired_opportunity()`.
+1. `ncode` is documented as **a single NAICS code, up to 6 digits** — there is no
+   documented prefix-search behavior. `"5413"` matching the whole subsector was never
+   confirmed against the real API, only inferred from secondary sources (blog posts,
+   scraper docs), which is exactly the kind of unverified claim that broke this
+   project's USAspending connector twice already. **Corrected**: DEFAULT_NAICS_FILTER
+   is now every individual 6-digit code in the family, queried **separately** — see
+   below — never combined into one value.
+2. `ptype` is documented in the OpenAPI spec as `collectionFormat: multi` — an array
+   parameter sent as **repeated query keys** (`ptype=o&ptype=p&...`), not the
+   comma-joined string round 1 sent. A comma-joined value for an array-typed parameter
+   plausibly matched nothing server-side, which alone could explain the zero. Passing
+   a Python list as an httpx params value produces exactly the repeated-key form —
+   confirmed directly against httpx's own request-building code in this sandbox
+   (`httpx.Request(...).url` — not an assumption about a third party this time).
+   `postedFrom`/`postedTo`'s `%m/%d/%Y` formatting was re-checked and is unaffected —
+   `strftime("%m/%d/%Y")` already produces exactly `MM/dd/yyyy`.
 
-**Redesign — two stages, per docs/PHASE2_ARCHITECTURE.md §5/§8:**
+**This time, the fix ships with its own live evidence instead of another assumption.**
+Every `fetch()` call runs three cheap (`limit=1`) diagnostic probes first — see
+`_run_diagnostic_probes()` — that isolate which filter, if any, is still zeroing out
+results: (A) date range alone, (B) + exact NAICS 541330, (C) + repeated ptype. Their
+`totalRecords`, plus the real query's own NAICS-by-NAICS totals, page counts, and
+post-relevance-filter count, are attached to the IntelligenceSyncRun and visible in the
+Source Manager's sync history — no more diagnosing a live incident by guessing from
+outside the system. The API key itself is never included in any recorded diagnostic.
 
-Stage 1 (`fetch()`'s query parameters) retrieves broadly within Principal's actual
-practice: NAICS 5413* (the whole "Architectural, Engineering, and Related Services"
-subsector — 541310 through 541380 — not just the single primary code) plus the
-configured secondary codes, and all six substantive notice types. Stage 2
+**Retrieval strategy, per the corrected understanding above**: each NAICS code
+(Principal's primary + the rest of the 541310–541380 "Architectural, Engineering, and
+Related Services" family + configured secondary codes) is queried **separately** —
+one exact `ncode` value per request, never combined — and results are merged and
+deduped by notice ID before Stage 2 scoring. This costs more requests than a single
+combined query would, but every individual request uses only documented, single-value
+syntax instead of a speculative multi-value or prefix form.
+
+**Still deliberately not added**: an `active`/status request parameter — nothing
+confirms one exists or its default behavior. Staleness is instead handled from the
+proposal deadline already in the response — see `_is_expired_opportunity()`.
+
+**Two stages, per docs/PHASE2_ARCHITECTURE.md §5/§8**: Stage 1 (`fetch()`'s per-NAICS
+queries) retrieves broadly within Principal's actual practice. Stage 2
 (`_score_relevance()` / `_is_expired_opportunity()`) ranks and filters what Stage 1
 retrieved against Principal's real profile — keyword relevance, agency/region weight,
 set-aside status — so a broader Stage 1 doesn't just flood the app with a bigger
-number; results are collected across pagination, scored, sorted best-first, *then*
-capped at MAX_RECORDS_PER_SYNC, so the strongest matches survive the cap rather than
-whichever page happened to load first.
+number; results are merged across every NAICS query, scored, sorted best-first, *then*
+capped at MAX_RECORDS_PER_SYNC.
 
 Parsing stays defensive (every field read with `.get()`) and unmapped notices are
-logged rather than silently dropped. Before the next production sync, check a sample
-of `raw_metadata` on the resulting rows against this mapping — see
-docs/DATA_INGESTION.md.
+logged rather than silently dropped. See docs/DATA_INGESTION.md.
 """
 import logging
 from datetime import date, datetime, timedelta, timezone
@@ -72,19 +77,33 @@ MAX_RECORDS_PER_SYNC = 500  # cap on IntelligenceItems one sync returns, post-sc
 MAX_CANDIDATES_TO_SCORE = 1500
 PAGE_SIZE = 100
 
-# NAICS 5413* = "Architectural, Engineering, and Related Services" (541310 Architectural,
-# 541320 Landscape Architecture, 541330 Engineering, 541340 Drafting, 541350 Building
-# Inspection, 541360 Geophysical Surveying, 541370 Surveying and Mapping, 541380 Testing
-# Laboratories) — Principal's actual practice, not just its one primary code. SAM.gov's
-# ncode filter is confirmed to support prefix matching, so this one prefix covers the
-# whole subsector instead of silently missing siblings the way an exact-code list does.
-DEFAULT_NAICS_FILTER = ["5413"]
+# The "Architectural, Engineering, and Related Services" NAICS family — Principal's
+# actual practice, not just its one primary code. Every code is queried SEPARATELY
+# (see fetch()) since ncode is documented as accepting one code, not a prefix or a
+# combined list — see module docstring for the incident that corrected this.
+DEFAULT_NAICS_FILTER = [
+    "541330",  # Engineering Services — Principal's primary code
+    "541310",  # Architectural Services
+    "541320",  # Landscape Architecture Services
+    "541340",  # Drafting Services
+    "541350",  # Building Inspection Services
+    "541360",  # Geophysical Surveying and Mapping Services
+    "541370",  # Surveying and Mapping (except Geophysical) Services
+    "541380",  # Testing Laboratories and Services
+]
 
 # ptype codes, confirmed: o=Solicitation, p=Presolicitation, k=Combined Synopsis/
 # Solicitation, r=Sources Sought, s=Special Notice, a=Award Notice. Deliberately
 # excludes notice types that were never pursuable opportunities in the first place
 # (Justification & Approval, Sale of Surplus Property, Intent to Bundle Requirements).
+# Sent as a list, never comma-joined — ptype is collectionFormat: multi (repeated
+# query keys), confirmed directly against httpx's own request-building in this sandbox.
 NOTICE_TYPE_CODES = ["o", "p", "k", "r", "s", "a"]
+
+# Diagnostic probes always use a full-year window regardless of the real sync's own
+# (possibly much narrower) since — a narrow probe window could itself explain a zero
+# and produce a misleading diagnosis. The API's documented max span is exactly 365 days.
+DIAGNOSTIC_PROBE_WINDOW_DAYS = 365
 
 # --- Stage 2: Principal relevance scoring ------------------------------------------
 #
@@ -240,10 +259,58 @@ def _is_expired_opportunity(raw: RawIntelligenceItem) -> bool:
     return due is not None and due < datetime.now(timezone.utc)
 
 
+def _probe(client: httpx.Client, posted_from: date, posted_to: date, **extra_params) -> dict:
+    """One minimal (limit=1 — we only need totalRecords, not the records themselves)
+    live query. Never returns the request params (which include api_key) — only the
+    outcome. Used by both _run_diagnostic_probes() and, indirectly, every real
+    per-NAICS query in fetch(), which reads totalRecords the same way."""
+    params = {
+        "api_key": settings.SAM_GOV_API_KEY,
+        "limit": 1,
+        "offset": 0,
+        "postedFrom": posted_from.strftime("%m/%d/%Y"),
+        "postedTo": posted_to.strftime("%m/%d/%Y"),
+        **extra_params,
+    }
+    try:
+        response = request_with_retry(client, "GET", BASE_URL, params=params)
+    except Exception as exc:
+        return {"status_code": None, "total_records": None, "error": str(exc)[:300]}
+    if response.status_code != 200:
+        return {"status_code": response.status_code, "total_records": None, "error": response.text[:300]}
+    return {"status_code": 200, "total_records": response.json().get("totalRecords")}
+
+
+def _run_diagnostic_probes(client: httpx.Client) -> dict:
+    """Test A/B/C from the round-2 production incident: three cheap live queries that
+    isolate which filter, if any, is still reducing SAM.gov's own totalRecords to
+    zero — evidence for the Source Manager's sync history, not another assumption.
+    Always uses a full DIAGNOSTIC_PROBE_WINDOW_DAYS window regardless of the real
+    sync's own (possibly narrower) since, so a tight recency window can't itself
+    produce a misleading zero here."""
+    posted_to = date.today()
+    posted_from = posted_to - timedelta(days=DIAGNOSTIC_PROBE_WINDOW_DAYS)
+    return {
+        "A_baseline_date_range_only": _probe(client, posted_from, posted_to),
+        "B_exact_naics_541330": _probe(client, posted_from, posted_to, ncode=settings.PRINCIPAL_PRIMARY_NAICS),
+        "C_naics_plus_notice_types": _probe(
+            client, posted_from, posted_to, ncode=settings.PRINCIPAL_PRIMARY_NAICS, ptype=NOTICE_TYPE_CODES
+        ),
+    }
+
+
 class SamGovConnector(IntelligenceConnector):
     key = "sam_gov"
     name = "SAM.gov"
     default_category = IntelligenceCategory.LIVE_OPPORTUNITY
+
+    def __init__(self):
+        # Set at the end of every fetch() call — read by intelligence_sync.run_sync()
+        # and attached to the IntelligenceSyncRun so the Source Manager's sync history
+        # shows exactly what was queried and what SAM.gov reported, per-field, without
+        # anyone needing to check logs. Never contains the API key. None until the
+        # first fetch() call completes.
+        self.last_run_diagnostics: dict | None = None
 
     def is_configured(self) -> bool:
         return bool(settings.SAM_GOV_API_KEY)
@@ -261,11 +328,11 @@ class SamGovConnector(IntelligenceConnector):
                 "environment (see backend/.env.example)."
             )
 
-        # Stage 1: broad-but-bounded retrieval. Defaults to the NAICS 5413* family
-        # (the whole A/E subsector) plus Principal's configured secondary codes —
-        # see DEFAULT_NAICS_FILTER's docstring for why exact-coding was the actual
-        # cause of the zero-results incident this replaced.
+        # Stage 1: broad-but-bounded retrieval, one NAICS code per request — see
+        # module docstring for why this is no longer a single combined/prefixed value.
         naics_codes = naics_codes or [*DEFAULT_NAICS_FILTER, *settings.PRINCIPAL_SECONDARY_NAICS]
+        seen_codes = set()
+        naics_codes = [c for c in naics_codes if not (c in seen_codes or seen_codes.add(c))]
 
         posted_from = since
         posted_to = date.today()
@@ -279,71 +346,91 @@ class SamGovConnector(IntelligenceConnector):
         if not windows:
             windows = [(posted_from, posted_to)]
 
-        # (score, raw) pairs, collected across every window/page before any cap is
-        # applied — Stage 2 needs the full candidate set to sort best-first, not just
-        # whichever page happened to load first.
-        candidates: list[tuple[int, RawIntelligenceItem]] = []
+        # Keyed by external_id so the same notice matching more than one NAICS query
+        # (e.g. a multi-disciplinary IDIQ) is merged, not duplicated.
+        candidates: dict[str, tuple[int, RawIntelligenceItem]] = {}
+        total_records_by_naics: dict[str, int] = {}
+        pages_fetched = 0
         retrieved_at = datetime.now(timezone.utc)
 
         with httpx.Client(timeout=30.0) as client:
-            for window_start, window_end in windows:
-                offset = 0
-                while True:
-                    params = {
-                        "api_key": settings.SAM_GOV_API_KEY,
-                        "limit": min(PAGE_SIZE, MAX_CANDIDATES_TO_SCORE - len(candidates)),
-                        "offset": offset,
-                        "postedFrom": window_start.strftime("%m/%d/%Y"),
-                        "postedTo": window_end.strftime("%m/%d/%Y"),
-                        # Confirmed param name; confirmed to support prefix matching.
-                        "ncode": ",".join(naics_codes),
-                        # Confirmed codes — explicit rather than relying on "omit
-                        # ptype = every type" holding true forever (see module
-                        # docstring). Sources Sought/Presolicitations included: they're
-                        # strategically valuable, never dropped.
-                        "ptype": ",".join(NOTICE_TYPE_CODES),
-                    }
-                    if states:
-                        params["state"] = ",".join(states)
+            probes = _run_diagnostic_probes(client)
 
-                    response = request_with_retry(client, "GET", BASE_URL, params=params)
-                    if response.status_code != 200:
-                        logger.error(
-                            "SAM.gov API returned %s: %s", response.status_code, response.text[:500]
-                        )
-                        response.raise_for_status()
-
-                    payload = response.json()
-                    items = payload.get("opportunitiesData", [])
-                    total_records = payload.get("totalRecords", len(items))
-
-                    for item in items:
-                        try:
-                            raw = self._to_raw_intelligence_item(item, retrieved_at)
-                        except Exception:
-                            logger.exception(
-                                "SAM.gov connector: failed to map notice %s — skipped, not fabricated",
-                                item.get("noticeId", "<unknown>"),
-                            )
-                            continue
-                        if _is_expired_opportunity(raw):
-                            continue
-                        score = _score_relevance(item)
-                        if score < MIN_RELEVANCE_SCORE:
-                            continue
-                        candidates.append((score, raw))
-
-                    offset += len(items)
-                    if not items or offset >= total_records or len(candidates) >= MAX_CANDIDATES_TO_SCORE:
-                        break
-
+            for naics_code in naics_codes:
                 if len(candidates) >= MAX_CANDIDATES_TO_SCORE:
                     break
+                naics_total_across_windows = 0
+                for window_start, window_end in windows:
+                    offset = 0
+                    window_total = 0
+                    while True:
+                        params = {
+                            "api_key": settings.SAM_GOV_API_KEY,
+                            "limit": min(PAGE_SIZE, MAX_CANDIDATES_TO_SCORE - len(candidates)),
+                            "offset": offset,
+                            "postedFrom": window_start.strftime("%m/%d/%Y"),
+                            "postedTo": window_end.strftime("%m/%d/%Y"),
+                            "ncode": naics_code,  # one exact code — see module docstring
+                            "ptype": NOTICE_TYPE_CODES,  # list -> repeated query keys
+                        }
+                        if states:
+                            params["state"] = ",".join(states)
 
-        # Stage 2: best matches first, then cap — so a broader Stage 1 query means
-        # better results, not just a bigger unranked pile capped in arrival order.
-        candidates.sort(key=lambda pair: pair[0], reverse=True)
-        return [raw for _, raw in candidates[:limit]]
+                        response = request_with_retry(client, "GET", BASE_URL, params=params)
+                        pages_fetched += 1
+                        if response.status_code != 200:
+                            logger.error(
+                                "SAM.gov API returned %s: %s", response.status_code, response.text[:500]
+                            )
+                            response.raise_for_status()
+
+                        payload = response.json()
+                        items = payload.get("opportunitiesData", [])
+                        window_total = payload.get("totalRecords", window_total + len(items))
+
+                        for item in items:
+                            try:
+                                raw = self._to_raw_intelligence_item(item, retrieved_at)
+                            except Exception:
+                                logger.exception(
+                                    "SAM.gov connector: failed to map notice %s — skipped, not fabricated",
+                                    item.get("noticeId", "<unknown>"),
+                                )
+                                continue
+                            if _is_expired_opportunity(raw):
+                                continue
+                            score = _score_relevance(item)
+                            if score < MIN_RELEVANCE_SCORE:
+                                continue
+                            candidates[raw.external_id] = (score, raw)
+
+                        offset += len(items)
+                        if not items or offset >= window_total or len(candidates) >= MAX_CANDIDATES_TO_SCORE:
+                            break
+
+                    naics_total_across_windows += window_total
+                    if len(candidates) >= MAX_CANDIDATES_TO_SCORE:
+                        break
+                total_records_by_naics[naics_code] = naics_total_across_windows
+
+        # Stage 2: best matches first, then cap — so a broader Stage 1 means better
+        # results, not just a bigger unranked pile capped in arrival order.
+        ranked = sorted(candidates.values(), key=lambda pair: pair[0], reverse=True)
+        kept = [raw for _, raw in ranked[:limit]]
+
+        self.last_run_diagnostics = {
+            "probes": probes,
+            "retrieval": {
+                "date_window": [posted_from.isoformat(), posted_to.isoformat()],
+                "naics_codes_queried": naics_codes,
+                "notice_type_codes": NOTICE_TYPE_CODES,
+                "total_records_by_naics": total_records_by_naics,
+                "pages_fetched": pages_fetched,
+                "candidates_before_relevance_filter": len(candidates),
+                "records_after_relevance_filter": len(kept),
+            },
+        }
+        return kept
 
     def _to_raw_intelligence_item(self, item: dict, retrieved_at: datetime) -> RawIntelligenceItem:
         notice_id = item.get("noticeId", "")

@@ -204,6 +204,39 @@ def test_unregistered_connector_key_raises_value_error(db):
         run_sync(db, source, SyncTriggeredBy.MANUAL)
 
 
+# --- Connector-reported sync diagnostics (opt-in, generic across all connectors) ---
+
+def test_run_sync_persists_connector_diagnostics_when_reported(db, fake_connector):
+    source = _source(db)
+    fake_connector.items = [_raw_item("A")]
+    fake_connector.last_run_diagnostics = {"retrieval": {"naics_codes_queried": ["541330"], "pages_fetched": 1}}
+
+    run = run_sync(db, source, SyncTriggeredBy.MANUAL)
+
+    assert run.diagnostics == {"retrieval": {"naics_codes_queried": ["541330"], "pages_fetched": 1}}
+
+
+def test_run_sync_diagnostics_is_none_for_connectors_that_do_not_report_it(db, fake_connector):
+    source = _source(db)
+    fake_connector.items = [_raw_item("A")]
+    assert not hasattr(fake_connector, "last_run_diagnostics")
+
+    run = run_sync(db, source, SyncTriggeredBy.MANUAL)  # must not raise on the missing attribute
+
+    assert run.diagnostics is None
+
+
+def test_run_sync_does_not_attach_stale_diagnostics_from_a_failed_fetch(db, fake_connector):
+    source = _source(db)
+    fake_connector.last_run_diagnostics = {"stale": "from a previous unrelated successful run"}
+    fake_connector.raise_on_fetch = ConnectionError("simulated network failure")
+
+    run = run_sync(db, source, SyncTriggeredBy.MANUAL)
+
+    assert run.status == SyncRunStatus.FAILURE
+    assert run.diagnostics is None
+
+
 # --- Shared dict/list-into-non-JSONB-column defense --------------------------------
 #
 # Production once hit psycopg.ProgrammingError: cannot adapt type 'dict' because a

@@ -60,6 +60,7 @@ class IntelligenceSyncRunRead(ORMModel):
     items_unchanged: int
     items_errored: int
     error_detail: str | None
+    diagnostics: dict | None
     triggered_by: SyncTriggeredBy
 
 

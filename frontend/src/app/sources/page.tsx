@@ -45,6 +45,79 @@ function formatDate(value: string | null): string {
   return new Date(value).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+function formatDiagnosticValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "—";
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return entries.length ? entries.map(([k, v]) => `${k}: ${v}`).join(", ") : "—";
+  }
+  return String(value);
+}
+
+const DIAGNOSTIC_FIELD_LABEL: Record<string, string> = {
+  date_window: "Date window",
+  naics_codes_queried: "NAICS codes queried",
+  notice_type_codes: "Notice types",
+  total_records_by_naics: "SAM totalRecords (by NAICS)",
+  pages_fetched: "Pages fetched",
+  candidates_before_relevance_filter: "Candidates before relevance filter",
+  records_after_relevance_filter: "Records accepted after relevance filter",
+};
+
+// Diagnostics shape is connector-specific (only SAM.gov reports it today), so this
+// recognizes the known probes/retrieval shape for a readable render and falls back to
+// raw JSON for anything else, rather than overfitting the UI to one connector.
+function SyncDiagnostics({ diagnostics }: { diagnostics: Record<string, unknown> }) {
+  const retrieval = diagnostics.retrieval as Record<string, unknown> | undefined;
+  const probes = diagnostics.probes as Record<string, { status_code: number | null; total_records: number | null; error?: string }> | undefined;
+
+  if (!retrieval && !probes) {
+    return <pre className="whitespace-pre-wrap break-words text-xs">{JSON.stringify(diagnostics, null, 2)}</pre>;
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      {retrieval && (
+        <div>
+          <div className="font-medium text-foreground">Retrieval query</div>
+          <dl className="mt-0.5 grid grid-cols-[max-content_1fr] gap-x-2 gap-y-0.5">
+            {Object.entries(retrieval).map(([key, value]) => (
+              <div key={key} className="contents">
+                <dt className="text-muted-foreground">{DIAGNOSTIC_FIELD_LABEL[key] ?? key}:</dt>
+                <dd className="break-words">{formatDiagnosticValue(value)}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+      {probes && (
+        <div>
+          <div className="font-medium text-foreground">Diagnostic probes (live, this run)</div>
+          <dl className="mt-0.5 grid grid-cols-[max-content_1fr] gap-x-2 gap-y-0.5">
+            {/* A/B/C is a deliberate escalating sequence (baseline -> +NAICS ->
+                +notice types) — sorted explicitly since JSONB round-trips don't
+                reliably preserve key insertion order, and reading them out of
+                sequence would undercut the point of the diagnostic. */}
+            {Object.entries(probes)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([name, result]) => (
+              <div key={name} className="contents">
+                <dt className="text-muted-foreground">{name}:</dt>
+                <dd className="break-words">
+                  {result.status_code === 200
+                    ? `totalRecords = ${result.total_records}`
+                    : `HTTP ${result.status_code ?? "error"}${result.error ? ` — ${result.error}` : ""}`}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function IntelligenceSourcesPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "administrator";
@@ -283,6 +356,11 @@ export default function IntelligenceSourcesPage() {
                       <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded bg-secondary/40 p-2 text-xs text-destructive">
                         {run.error_detail}
                       </pre>
+                    )}
+                    {run.diagnostics && (
+                      <div className="mt-2 rounded bg-secondary/40 p-2 text-xs text-muted-foreground">
+                        <SyncDiagnostics diagnostics={run.diagnostics} />
+                      </div>
                     )}
                   </div>
                 );

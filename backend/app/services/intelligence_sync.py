@@ -298,6 +298,11 @@ def run_sync(
 
     try:
         raw_items = connector.fetch(date.today() - timedelta(days=since_days))
+        # Opt-in: only some connectors (currently SAM.gov) report query diagnostics —
+        # absent on any connector that doesn't set it, and deliberately not read on
+        # the except branch below so a failed fetch() never attaches a stale
+        # diagnostics snapshot left over from a previous, unrelated successful run.
+        run_diagnostics = getattr(connector, "last_run_diagnostics", None)
     except Exception as exc:
         logger.exception("Sync failed for source '%s'", source.name)
         run.status = SyncRunStatus.FAILURE
@@ -332,6 +337,7 @@ def run_sync(
     run.items_updated = updated
     run.items_unchanged = max(0, fetched - created - updated - errored)
     run.items_errored = errored
+    run.diagnostics = run_diagnostics
     if errored == 0:
         run.status = SyncRunStatus.SUCCESS
     elif created or updated:

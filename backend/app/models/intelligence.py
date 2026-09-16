@@ -193,6 +193,13 @@ class IntelligenceSyncRun(UUIDPKMixin, TimestampMixin, Base):
     items_unchanged: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     items_errored: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_detail: Mapped[str | None] = mapped_column(Text, default=None)
+    # Connector-reported query diagnostics (date window, filters used, SAM.gov-style
+    # totalRecords/pages-fetched/post-relevance-filter counts, live diagnostic probe
+    # results where a connector runs them) — so a thin/empty sync can be diagnosed from
+    # the Source Manager's sync history instead of guessing from outside the system.
+    # Populated only by connectors that report it (currently SAM.gov); NULL otherwise.
+    # Never contains credentials — see app/connectors/sam_gov.py's _probe().
+    diagnostics: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
     triggered_by: Mapped[SyncTriggeredBy] = mapped_column(pg_enum(SyncTriggeredBy), nullable=False)
     triggered_by_user_id: Mapped[uuid.UUID | None] = fk_uuid("users.id", nullable=True)

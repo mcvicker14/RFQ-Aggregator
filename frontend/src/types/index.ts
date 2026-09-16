@@ -523,6 +523,12 @@ export interface IntelligenceSyncRun {
   items_unchanged: number;
   items_errored: number;
   error_detail: string | null;
+  // Connector-reported query diagnostics (date window, filters used, totalRecords,
+  // pages fetched, records kept after relevance filtering, live diagnostic probes) —
+  // only some connectors report this (currently SAM.gov); null otherwise. Shape is
+  // connector-specific, so this stays loosely typed rather than modeling every
+  // connector's fields.
+  diagnostics: Record<string, unknown> | null;
   triggered_by: SyncTriggeredBy;
 }
 
