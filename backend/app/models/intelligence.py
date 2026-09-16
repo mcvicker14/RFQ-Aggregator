@@ -149,6 +149,14 @@ class IntelligenceItem(UUIDPKMixin, TimestampMixin, Base):
     sam_relevance_score: Mapped[int | None] = mapped_column(Integer, default=None)
     sam_relevance_rationale: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
+    # "Is this Grants.gov listing worth surfacing as a possible future source of
+    # engineering work?" — a fourth, separate question from the three scores above.
+    # Only populated for source == "Grants.gov" today — see
+    # app/services/grants_relevance_scoring.py; NULL for every other source, which is
+    # not filtered by it. See docs/PHASE2_ARCHITECTURE.md §10b.
+    grants_relevance_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    grants_relevance_rationale: Mapped[dict | None] = mapped_column(JSONB, default=None)
+
     raw_metadata: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
     first_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

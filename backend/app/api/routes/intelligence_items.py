@@ -11,6 +11,11 @@ from app.models.intelligence import IntelligenceItem
 from app.models.scoring import OpportunityScore
 from app.models.user import User
 from app.schemas.intelligence import IntelligenceItemRead
+from app.services.grants_relevance_scoring import (
+    HIGH_VALUE_THRESHOLD as GRANTS_HIGH_VALUE_THRESHOLD,
+    POSSIBLE_SIGNAL_THRESHOLD as GRANTS_POSSIBLE_SIGNAL_THRESHOLD,
+    RELEVANT_THRESHOLD as GRANTS_RELEVANT_THRESHOLD,
+)
 from app.services.sam_relevance_scoring import (
     HIGHLY_RELEVANT_THRESHOLD,
     POSSIBLE_MATCH_THRESHOLD,
@@ -37,6 +42,7 @@ _SORT_COLUMNS = {
     "funding_amount": IntelligenceItem.funding_amount,
     "early_signal_score": IntelligenceItem.early_signal_score,
     "sam_relevance_score": IntelligenceItem.sam_relevance_score,
+    "grants_relevance_score": IntelligenceItem.grants_relevance_score,
     "pursuit_score": _latest_pursuit_score.c.score,
 }
 
@@ -47,6 +53,17 @@ _SAM_RELEVANCE_TIER_FLOOR: dict[str, int | None] = {
     "highly_relevant": HIGHLY_RELEVANT_THRESHOLD,
     "relevant": RELEVANT_THRESHOLD,
     "possible_match": POSSIBLE_MATCH_THRESHOLD,
+    "all": None,
+}
+
+# Same pattern, independent of the SAM one above — mirrors
+# grants_relevance_scoring.py's own tier boundaries and never affects non-Grants.gov
+# items (see the filter's application below), the same way the SAM one never affects
+# non-SAM items.
+_GRANTS_RELEVANCE_TIER_FLOOR: dict[str, int | None] = {
+    "high_value_signal": GRANTS_HIGH_VALUE_THRESHOLD,
+    "relevant_signal": GRANTS_RELEVANT_THRESHOLD,
+    "possible_signal": GRANTS_POSSIBLE_SIGNAL_THRESHOLD,
     "all": None,
 }
 
@@ -76,9 +93,19 @@ def list_intelligence_items(
             "'possible_match' widens to >=50, 'all' removes the filter entirely."
         ),
     ),
+    grants_relevance_tier: str = Query(
+        "relevant_signal",
+        pattern="^(high_value_signal|relevant_signal|possible_signal|all)$",
+        description=(
+            "Default Discover view is 'relevant_signal' (Grant Engineering Relevance "
+            "Score >= 65) and above, for Grants.gov items only — this never hides "
+            "items from any other source. 'possible_signal' widens to >=50, 'all' "
+            "removes the filter entirely."
+        ),
+    ),
     sort_by: str = Query(
         "first_detected_at",
-        pattern="^(first_detected_at|proposal_due_at|estimated_value_high|funding_amount|early_signal_score|sam_relevance_score|pursuit_score)$",
+        pattern="^(first_detected_at|proposal_due_at|estimated_value_high|funding_amount|early_signal_score|sam_relevance_score|grants_relevance_score|pursuit_score)$",
     ),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     limit: int = Query(100, le=500),
@@ -124,10 +151,15 @@ def list_intelligence_items(
     if unpromoted_only:
         stmt = stmt.where(IntelligenceItem.opportunity_id.is_(None))
 
-    floor = _SAM_RELEVANCE_TIER_FLOOR[sam_relevance_tier]
-    if floor is not None:
+    sam_floor = _SAM_RELEVANCE_TIER_FLOOR[sam_relevance_tier]
+    if sam_floor is not None:
         stmt = stmt.where(
-            or_(IntelligenceItem.sam_relevance_score.is_(None), IntelligenceItem.sam_relevance_score >= floor)
+            or_(IntelligenceItem.sam_relevance_score.is_(None), IntelligenceItem.sam_relevance_score >= sam_floor)
+        )
+    grants_floor = _GRANTS_RELEVANCE_TIER_FLOOR[grants_relevance_tier]
+    if grants_floor is not None:
+        stmt = stmt.where(
+            or_(IntelligenceItem.grants_relevance_score.is_(None), IntelligenceItem.grants_relevance_score >= grants_floor)
         )
 
     column = _SORT_COLUMNS[sort_by]

@@ -1,9 +1,9 @@
-"""Grants.gov connector — federal grant funding announcements, filtered to Principal's
-infrastructure/water/wastewater/transportation markets. Category is always
+"""Grants.gov connector — federal grant funding announcements. Category is always
 EARLY_SIGNAL: a grant landing at a Louisiana parish or state agency is a leading
 indicator of the design/engineering RFQ that typically follows, not a procurement
-itself, so these are never promoted to the pipeline. See
-docs/PHASE2_ARCHITECTURE.md §8.
+itself, so these are never promoted to the pipeline (EARLY_SIGNAL is never in
+PROMOTABLE_CATEGORIES — see app/services/intelligence_sync.py). See
+docs/PHASE2_ARCHITECTURE.md §8/§10b.
 
 Public, keyless API (`POST https://api.grants.gov/v1/api/search2`). Unlike
 USAspending.gov, this sandbox's egress allowlist blocks every source tried for this
@@ -18,6 +18,17 @@ this is deliberately more defensive than the SAM.gov/USAspending connectors, whi
 a single higher-confidence source to work from. **Verify `raw_metadata` on the first
 real sync and simplify `_first_present()` down to whichever name actually appears once
 that's confirmed.**
+
+**Production incident**: technically working (116 items imported), but the vast
+majority weren't Principal-relevant. Root cause: `_is_relevant()` used to be a
+pre-persistence keyword filter here — the exact same architecture mistake round 1 of
+the SAM.gov fix made (filter before storage, so a near-miss keyword or an unlisted-but-
+genuinely-relevant program is silently lost forever, and nothing survives for
+provenance). Removed. Following the same principle the SAM.gov redesign settled on:
+retrieve broadly, keep everything fetched for provenance, score for Principal
+relevance *after* persistence — see app/services/grants_relevance_scoring.py. Every
+successfully-mapped opportunity is now persisted; only a genuine mapping failure (no
+id) is still skipped, per IntelligenceConnector's contract.
 """
 import logging
 from datetime import date, datetime, timezone
@@ -34,25 +45,9 @@ BASE_URL = "https://api.grants.gov/v1/api/search2"
 PAGE_SIZE = 100
 # Grants.gov posts across every domain (health, arts, agriculture, education...), and
 # unlike SAM.gov/USAspending there's no NAICS-equivalent server-side filter available
-# here — relevance filtering happens client-side (_is_relevant below), so this bounds
-# how much irrelevant volume gets fetched-then-discarded per sync, not how much ends
-# up in the database.
+# here. This bounds one sync's fetch volume — relevance is no longer decided here at
+# all (see module docstring), only how much gets paged through and persisted per sync.
 MAX_FETCHED_PER_SYNC = 1000
-
-# Title/agency keyword filter — Principal's markets, mirroring app/services/scoring.py's
-# CORE_MARKET_KEYWORDS closely (kept as a separate list since grant program titles use
-# somewhat different phrasing than solicitation titles).
-RELEVANCE_KEYWORDS = [
-    "water", "wastewater", "stormwater", "drainage", "flood", "levee", "resilience",
-    "infrastructure", "transportation", "highway", "bridge", "port", "airport",
-    "disaster recovery", "hazard mitigation", "civil engineering", "utility", "utilities",
-    "watershed", "coastal", "environmental", "construction", "capital improvement",
-]
-
-
-def _is_relevant(title: str, agency_name: str | None) -> bool:
-    text = f"{title} {agency_name or ''}".lower()
-    return any(keyword in text for keyword in RELEVANCE_KEYWORDS)
 
 
 def _first_present(item: dict, *keys: str):
@@ -117,15 +112,12 @@ class GrantsGovConnector(IntelligenceConnector):
 
                 for item in hits:
                     try:
-                        raw = self._to_raw_intelligence_item(item, retrieved_at)
+                        results.append(self._to_raw_intelligence_item(item, retrieved_at))
                     except Exception:
                         logger.exception(
                             "Grants.gov connector: failed to map opportunity %s — skipped, not fabricated",
                             _first_present(item, "id", "opportunityId") or "<unknown>",
                         )
-                        continue
-                    if raw is not None:  # None = successfully parsed but filtered as not relevant
-                        results.append(raw)
 
                 fetched += len(hits)
                 start += len(hits)
@@ -134,7 +126,7 @@ class GrantsGovConnector(IntelligenceConnector):
 
         return results
 
-    def _to_raw_intelligence_item(self, item: dict, retrieved_at: datetime) -> RawIntelligenceItem | None:
+    def _to_raw_intelligence_item(self, item: dict, retrieved_at: datetime) -> RawIntelligenceItem:
         opp_id = _first_present(item, "id", "opportunityId")
         if opp_id is None:
             raise ValueError("Grants.gov opportunity missing an id — cannot dedupe reliably")
@@ -142,16 +134,36 @@ class GrantsGovConnector(IntelligenceConnector):
         title = _first_present(item, "title", "opportunityTitle") or "(untitled Grants.gov opportunity)"
         agency_name = _first_present(item, "agencyName")
 
-        if not _is_relevant(title, agency_name):
-            return None
+        # Grants.gov's search response reportedly carries a synopsis and an eligible-
+        # applicants description as separate fields (per third-party integrations — see
+        # module docstring on this connector's field-name uncertainty generally).
+        # Folded into one description so app/services/grants_relevance_scoring.py's
+        # recipient-type matching (state/parish/municipal/utility/district/authority —
+        # the user's own "strong recipient signals") has real text to check against;
+        # that module reads IntelligenceItem.description, not raw_metadata, matching
+        # how the SAM.gov scorer only ever reads normalized fields too.
+        synopsis = _first_present(item, "description", "synopsis", "opportunitySynopsis")
+        eligible_applicants = _first_present(
+            item, "eligibleApplicants", "applicantEligibilityDesc", "applicantTypes", "eligibilityDesc"
+        )
+        description = " ".join(str(p) for p in (synopsis, eligible_applicants) if p) or None
 
         fields = {
             "title": title,
+            "description": description,
             "agency_name": agency_name,
             "funding_award_number": str(_first_present(item, "number", "opportunityNumber") or "") or None,
             "proposal_due_at": _parse_date(_first_present(item, "closeDate")),
             "posted_at": _parse_date(_first_present(item, "openDate", "postDate")),
             "funding_amount": _to_float(_first_present(item, "estimatedFunding", "awardCeiling")),
+            # Grants.gov's data model is about funding *opportunities* (forecasted/
+            # posted/closed/archived — confirmed no "awarded" status exists), never
+            # specific-recipient awards; this connector has no evidence it ever
+            # provides real award/recipient data, so awardee_name is deliberately never
+            # set here. If a future enhancement ever does have real recipient data,
+            # setting this field is what genuinely (not heuristically) flips
+            # grants_relevance_scoring's award-vs-opportunity distinction — see that
+            # module's docstring.
         }
 
         return RawIntelligenceItem(

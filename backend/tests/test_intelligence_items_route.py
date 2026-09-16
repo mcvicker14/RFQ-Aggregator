@@ -188,6 +188,72 @@ def test_sort_by_sam_relevance_score(client, db):
     assert [i["title"] for i in response.json()] == ["High", "Mid"]
 
 
+# --- grants_relevance_tier: the default-view filter, independent of the SAM one ----
+
+def test_default_grants_relevance_tier_hides_low_scoring_grants(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="High value", grants_relevance_score=85)
+    _item(db, source, external_id="B", title="Relevant", grants_relevance_score=65)
+    _item(db, source, external_id="C", title="Possible", grants_relevance_score=55)
+    _item(db, source, external_id="D", title="Low relevance", grants_relevance_score=20)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})  # default tier
+
+    titles = {i["title"] for i in response.json()}
+    assert titles == {"High value", "Relevant"}
+
+
+def test_grants_relevance_tier_never_hides_items_with_no_grants_score(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Unscored item", grants_relevance_score=None)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    assert [i["title"] for i in response.json()] == ["Unscored item"]
+
+
+def test_grants_relevance_tier_all_shows_everything(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Low relevance", grants_relevance_score=5)
+    db.commit()
+
+    response = client.get(
+        "/api/intelligence/items", params={"source_id": str(source.id), "grants_relevance_tier": "all"}
+    )
+
+    assert [i["title"] for i in response.json()] == ["Low relevance"]
+
+
+def test_sam_and_grants_relevance_filters_are_independent(client, db):
+    # A low-scoring SAM item and a low-scoring Grants.gov item in the same query —
+    # each filter only ever hides its own source's items.
+    source = _source(db)
+    _item(db, source, external_id="A", title="Low SAM", sam_relevance_score=10)
+    _item(db, source, external_id="B", title="Low Grants", grants_relevance_score=10)
+    _item(db, source, external_id="C", title="Neither scored", intelligence_category=IntelligenceCategory.EARLY_SIGNAL)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})  # both defaults
+
+    assert [i["title"] for i in response.json()] == ["Neither scored"]
+
+
+def test_sort_by_grants_relevance_score(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Mid", grants_relevance_score=70, grants_relevance_rationale={})
+    _item(db, source, external_id="B", title="High", grants_relevance_score=95, grants_relevance_rationale={})
+    db.commit()
+
+    response = client.get(
+        "/api/intelligence/items",
+        params={"source_id": str(source.id), "sort_by": "grants_relevance_score", "grants_relevance_tier": "all"},
+    )
+
+    assert [i["title"] for i in response.json()] == ["High", "Mid"]
+
+
 # --- pursuit_score: joined from the latest OpportunityScore, not an IntelligenceItem column --
 
 def _score_opportunity(db, opportunity_id, score, computed_at):

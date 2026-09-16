@@ -449,6 +449,81 @@ but "**is this SAM.gov notice even worth putting in front of Principal at all**.
   a general "limited signal, worth a manual check" caveat — `None` when there's no
   meaningful caveat). Template-based, like the other two engines — no LLM call.
 
+## 10b. Grant Engineering Relevance Score
+
+A fourth, separate engine (`app/services/grants_relevance_scoring.py`), added after the
+same class of production incident as §10a: Grants.gov's retrieval-time `_is_relevant()`
+keyword filter (a pre-persistence hard filter) let a live sync return 116 records, most
+not Principal-relevant, and — being pre-persistence — silently dropped whatever it
+rejected with no provenance at all. Same fix shape as SAM: broad retrieval, drop the
+pre-persistence filter, score after persistence.
+
+Grants.gov is architecturally unlike Principal's other sources: it's not a list of
+procurements or grants for Principal to pursue directly — it's an **early-signal
+source for public infrastructure funding** that may, once a recipient plans the funded
+project, generate a future engineering RFQ (water/wastewater, drainage/flood,
+transportation, utility, civil design). This score answers that specific question:
+"**could this funding realistically lead to a future procurement for engineering
+services**" — not "should Principal apply for this grant," which none of the four
+scores answer.
+
+- **Populated only for `source == "Grants.gov"`** — every other source's items have
+  `grants_relevance_score = NULL` and are never filtered by it, mirroring
+  `sam_relevance_score`'s isolation.
+- **Computed after persistence, not as a retrieval filter.** The connector's
+  `_to_raw_intelligence_item()` always returns an item now (it used to return `None`
+  for anything the old keyword filter rejected); `intelligence_sync.run_sync()` calls
+  `calculate_grants_relevance_score()` in the same per-item loop as
+  `calculate_sam_relevance_score()`, right after upsert.
+- **No promotion gate needed.** Unlike SAM items, Grants.gov items are always created
+  with `default_category = IntelligenceCategory.EARLY_SIGNAL`, and `EARLY_SIGNAL` was
+  already outside `PROMOTABLE_CATEGORIES` before this change — a grant was never
+  auto-promoted into an `Opportunity` regardless of any score. This score instead gates
+  *default visibility* (Discover's filter, the dashboard's intelligence counts and
+  high-priority-signals widget) and feeds into the existing Early Signal Score
+  calculation for items that clear it, exactly as instructed: "classify as early
+  signal, do not automatically promote."
+- **Components**: infrastructure/engineering theme phrases in title+description (water/
+  wastewater/sewer, drainage/flood/stormwater, transportation/roads/bridges, utilities,
+  hazard mitigation/disaster recovery, coastal restoration, capital improvement, etc. —
+  capped so no single phrase carries a record), recipient-type phrases (state/parish/
+  county government, municipal, public utility, water/sewer/drainage/levee district,
+  port/airport/transportation authority, tribal government — valuable because these are
+  plausible *future buyers* of engineering services, independent of the funded theme),
+  a funding-size bonus gated behind already-established content/recipient scope (a
+  large program with an irrelevant technical scope gets no bonus), and an award-signal
+  bonus, also gated the same way, that only ever fires when the connector has genuinely
+  set `awardee_name` — **never inferred**. Grants.gov's own data model (Forecasted/
+  Posted/Closed/Archived opportunity statuses) has no "Awarded" status with recipient
+  data, so every current Grants.gov item honestly reports `signal_type: "opportunity"`,
+  never a guessed `"award"`. Negative theme phrases (biomedical/medical research,
+  behavioral health, social services, education/scholarship, humanities/arts, workforce
+  training, academic/scientific research, law enforcement, non-infrastructure public
+  health, agricultural research, nonprofit service delivery) apply as a penalty, not a
+  veto — a genuinely infrastructure-relevant program that also touches one of these
+  (e.g. an NRCS watershed program with an agricultural-research component) can still
+  clear the relevance floor. Generic terms the task explicitly called out — bare
+  "community," "development," "public," "planning," "resilience" — are deliberately
+  absent from every phrase list, so they contribute nothing by themselves; a title built
+  entirely from them scores exactly 0.
+- **Tiers**: 80–100 High-Value Engineering Signal, 65–79 Relevant Infrastructure Signal
+  (together, the default Discover view), 50–64 Possible Engineering Signal (behind an
+  explicit filter), below 50 Low Relevance (kept for provenance, never shown by
+  default) — the same numeric bands as §10a's SAM tiers, for a consistent mental model,
+  even though the two scores measure unrelated things and are never compared directly.
+  `HIGH_VALUE_THRESHOLD`/`RELEVANT_THRESHOLD`/`POSSIBLE_SIGNAL_THRESHOLD` in
+  `grants_relevance_scoring.py` are the single source of truth every caller imports
+  rather than re-derives (aliased on import wherever a file already imports SAM's
+  same-named constants, e.g. `dashboard.py`, `intelligence_items.py`).
+- **Explanation, not just a number**: `grants_relevance_rationale` (JSONB) carries a
+  component breakdown, `signal_type` (`"opportunity"` or `"award"`), and two generated
+  sentences — `why_relevant` (matched theme/recipient phrases, and the awardee name
+  when a real award signal exists) and `why_not_fit` (a matched negative phrase, a
+  "national opportunity, not a confirmed local award" caveat for an unconfirmed
+  opportunity-type record that otherwise scores well, or a general "limited signal"
+  caveat — `None` when there's no meaningful caveat). Template-based, like the other
+  three engines — no LLM call.
+
 ## 11. API and frontend surface
 
 **New backend routes**: `intelligence_sources.py` (registry CRUD for admins + sync

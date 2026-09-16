@@ -63,7 +63,11 @@ def test_maps_relevant_opportunity_shape_b():
     assert raw.fields["funding_amount"] == 2000000.0
 
 
-def test_irrelevant_opportunity_is_filtered_out_not_treated_as_an_error():
+def test_topically_irrelevant_opportunity_is_still_persisted_not_filtered():
+    # Production incident: _is_relevant() used to drop anything off-topic before
+    # persistence — the same mistake round 1 of the SAM.gov fix made. Removed:
+    # relevance is now decided entirely by grants_relevance_scoring.py, after
+    # persistence, so nothing is silently lost. See module docstring.
     connector = GrantsGovConnector()
     item = {
         "id": 1,
@@ -73,14 +77,27 @@ def test_irrelevant_opportunity_is_filtered_out_not_treated_as_an_error():
 
     raw = connector._to_raw_intelligence_item(item, RETRIEVED_AT)
 
-    assert raw is None  # filtered, not raised
+    assert raw is not None
+    assert raw.fields["title"] == "National Endowment for the Arts Literature Fellowships"
 
 
-def test_relevant_by_agency_name_even_without_keyword_in_title():
+def test_synopsis_and_eligible_applicants_are_folded_into_description():
     connector = GrantsGovConnector()
-    item = {"id": 2, "title": "FY26 Formula Allocation", "agencyName": "Federal Highway Administration"}
+    item = {
+        "id": 2, "title": "Clean Water State Revolving Fund", "agencyName": "Environmental Protection Agency",
+        "description": "Provides capitalization grants for water infrastructure projects.",
+        "eligibleApplicants": "State governments; special district governments",
+    }
     raw = connector._to_raw_intelligence_item(item, RETRIEVED_AT)
-    assert raw is not None  # "highway" keyword matches via agency name
+    assert "water infrastructure" in raw.fields["description"]
+    assert "special district governments" in raw.fields["description"]
+
+
+def test_missing_description_and_eligibility_leaves_description_none():
+    connector = GrantsGovConnector()
+    item = {"id": 3, "title": "FY26 Formula Allocation", "agencyName": "Federal Highway Administration"}
+    raw = connector._to_raw_intelligence_item(item, RETRIEVED_AT)
+    assert raw.fields["description"] is None
 
 
 def test_missing_id_raises_so_the_item_is_skipped_not_fabricated():

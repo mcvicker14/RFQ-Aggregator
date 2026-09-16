@@ -22,7 +22,8 @@ from app.schemas.dashboard import ChartBucket, DashboardSummary, IntelligenceKpi
 from app.schemas.opportunity import OpportunityListItem
 from app.schemas.task import TaskRead
 from app.services.app_settings import hide_sample_data_by_default
-from app.services.sam_relevance_scoring import RELEVANT_THRESHOLD
+from app.services.grants_relevance_scoring import RELEVANT_THRESHOLD as GRANTS_RELEVANT_THRESHOLD
+from app.services.sam_relevance_scoring import RELEVANT_THRESHOLD as SAM_RELEVANT_THRESHOLD
 
 EARLY_STAGES = {
     MaturityStage.RUMORED_CONCEPTUAL, MaturityStage.FUNDING_IDENTIFIED, MaturityStage.PLANNING,
@@ -52,14 +53,16 @@ def _opportunity_to_list_item(opp: Opportunity, agency: Agency | None, score: Op
 def _build_intelligence_kpis(
     db: Session, user: User, now: datetime, week_ago: datetime, include_samples: bool
 ) -> IntelligenceKpis:
-    # Excludes SAM.gov items below RELEVANT_THRESHOLD by default — the same "is this
-    # even worth Principal's attention" bar Discover's default view uses (see
-    # app/services/sam_relevance_scoring.py). A raw fetch/error count for SAM.gov
-    # itself is still fully visible on the Source Manager page; this is specifically
-    # about not flooding the *intelligence* counts a user reads as "what's new to look
-    # at." Never excludes any other source — those have no SAM relevance score at all.
+    # Excludes SAM.gov and Grants.gov items below their own relevance thresholds by
+    # default — the same "is this even worth Principal's attention" bar Discover's
+    # default view uses (see app/services/sam_relevance_scoring.py and
+    # grants_relevance_scoring.py). A raw fetch/error count for either source is still
+    # fully visible on the Source Manager page; this is specifically about not
+    # flooding the *intelligence* counts a user reads as "what's new to look at."
+    # Neither filter excludes any other source — those have no relevance score at all.
     item_query = select(IntelligenceItem).where(
-        or_(IntelligenceItem.sam_relevance_score.is_(None), IntelligenceItem.sam_relevance_score >= RELEVANT_THRESHOLD)
+        or_(IntelligenceItem.sam_relevance_score.is_(None), IntelligenceItem.sam_relevance_score >= SAM_RELEVANT_THRESHOLD),
+        or_(IntelligenceItem.grants_relevance_score.is_(None), IntelligenceItem.grants_relevance_score >= GRANTS_RELEVANT_THRESHOLD),
     )
     if not include_samples:
         item_query = item_query.where(IntelligenceItem.is_sample_data.is_(False))
@@ -105,10 +108,17 @@ def _build_intelligence_kpis(
 
 
 def _high_priority_signals(db: Session, include_samples: bool, limit: int = 10) -> list[IntelligenceItem]:
+    # Early Signal score (how likely to become a real procurement) is independent of
+    # Grant Engineering Relevance score (whether the underlying grant is even
+    # infrastructure/engineering-relevant at all) — a topically irrelevant Grants.gov
+    # record can still carry a high early_signal_score, so this widget needs its own
+    # Grants.gov relevance floor, same as the intelligence KPI counts above. Non-Grants.gov
+    # signals have no grants_relevance_score at all and are never affected.
     query = select(IntelligenceItem).where(
         IntelligenceItem.intelligence_category == IntelligenceCategory.EARLY_SIGNAL,
         IntelligenceItem.opportunity_id.is_(None),
         IntelligenceItem.early_signal_score.isnot(None),
+        or_(IntelligenceItem.grants_relevance_score.is_(None), IntelligenceItem.grants_relevance_score >= GRANTS_RELEVANT_THRESHOLD),
     )
     if not include_samples:
         query = query.where(IntelligenceItem.is_sample_data.is_(False))

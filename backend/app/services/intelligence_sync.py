@@ -38,6 +38,7 @@ from app.models.pipeline import PipelineStage
 from app.services.activities import log_activity
 from app.services.dedup import find_and_cluster_candidates
 from app.services.early_signal_scoring import calculate_early_signal_score
+from app.services.grants_relevance_scoring import calculate_grants_relevance_score
 from app.services.sam_relevance_scoring import RELEVANT_THRESHOLD, calculate_sam_relevance_score
 from app.services.scoring import calculate_score
 
@@ -334,6 +335,7 @@ def run_sync(
             calculate_sam_relevance_score(item)  # must run before promotion — it gates it
             promote_intelligence_item(db, item)
             calculate_early_signal_score(db, item)
+            calculate_grants_relevance_score(item)  # no promotion gate needed — EARLY_SIGNAL is never promotable
             find_and_cluster_candidates(db, item)
             db.commit()
             created += was_created

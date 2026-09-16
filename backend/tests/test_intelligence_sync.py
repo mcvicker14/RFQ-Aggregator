@@ -261,6 +261,54 @@ def test_validate_connector_fields_allows_plain_scalars():
     )  # must not raise
 
 
+# --- Grant Engineering Relevance Score wiring (calculate_grants_relevance_score) ---
+#
+# Uses an IntelligenceSource literally named "Grants.gov" -- the scoring engine keys
+# off IntelligenceItem.source, which _upsert_intelligence_item sets from
+# IntelligenceSource.name (see intelligence_sync.py) -- to prove the real run_sync()
+# pipeline, not just the scoring engine in isolation, computes and persists
+# grants_relevance_score, that a low-scoring item is still persisted (never dropped,
+# per the architecture rule), and that it still never promotes regardless of score
+# (EARLY_SIGNAL is never in PROMOTABLE_CATEGORIES -- independent of relevance).
+
+def test_run_sync_computes_and_persists_grants_relevance_score(db, fake_connector):
+    # The Wave 1-3 seed data already has a real "Grants.gov" source row (unique on
+    # name) -- reuse it rather than _source()'s fresh-insert helper, redirected at
+    # FakeConnector for this test the same way _source() redirects any other source.
+    source = db.query(IntelligenceSource).filter_by(name="Grants.gov").one()
+    source.connector_key = "fake_source"
+    source.is_enabled = True
+    db.flush()
+    fake_connector.items = [
+        _raw_item(
+            "A", category=IntelligenceCategory.EARLY_SIGNAL,
+            title="Water and Sanitary Sewer Infrastructure Improvement Grant Program",
+            description="Eligible applicants include state government and municipal entities for wastewater "
+                         "treatment upgrades.",
+        ),
+        _raw_item(
+            "B", category=IntelligenceCategory.EARLY_SIGNAL,
+            title="Scholarship and Education Program Grant for Underserved Students",
+        ),
+    ]
+
+    run_sync(db, source, SyncTriggeredBy.MANUAL)
+
+    relevant_item = db.query(IntelligenceItem).filter_by(external_id="A").one()
+    irrelevant_item = db.query(IntelligenceItem).filter_by(external_id="B").one()
+
+    assert relevant_item.grants_relevance_score is not None
+    assert relevant_item.grants_relevance_score >= 65
+    # Scored, not dropped -- broad retrieval, post-persistence scoring, per the
+    # architecture rule this turn's fix follows.
+    assert irrelevant_item.grants_relevance_score is not None
+    assert irrelevant_item.grants_relevance_rationale is not None
+    assert irrelevant_item.grants_relevance_score < 50
+
+    assert relevant_item.opportunity_id is None
+    assert irrelevant_item.opportunity_id is None
+
+
 def test_bad_connector_field_type_is_skipped_not_a_raw_db_crash(db, fake_connector):
     """The end-to-end version of the two tests above: run_sync must never surface a
     connector's dict-into-VARCHAR mistake as an uncaught DBAPI error — it's caught and

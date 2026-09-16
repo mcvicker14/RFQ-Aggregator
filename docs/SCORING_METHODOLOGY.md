@@ -3,13 +3,16 @@
 Every opportunity gets a score from **0–100**, recalculated whenever a scored field
 changes. Implementation: `backend/app/services/scoring.py`.
 
-This is one of three separate scoring engines, each answering a different question —
+This is one of four separate scoring engines, each answering a different question —
 this doc covers only the Pursuit Score ("how attractive is this actual pursuit," which
-only applies once something is a tracked Opportunity). The other two are documented in
-`docs/PHASE2_ARCHITECTURE.md`: **Early Signal Score** (§10 — "how likely is this to
-become a real procurement at all") and **SAM Relevance Score** (§10a — "is this
-SAM.gov notice even worth putting in front of Principal," which gates whether a
-fetched SAM.gov notice is promoted into an Opportunity in the first place).
+only applies once something is a tracked Opportunity). The other three are documented
+in `docs/PHASE2_ARCHITECTURE.md`: **Early Signal Score** (§10 — "how likely is this to
+become a real procurement at all"), **SAM Relevance Score** (§10a — "is this SAM.gov
+notice even worth putting in front of Principal," which gates whether a fetched
+SAM.gov notice is promoted into an Opportunity in the first place), and **Grant
+Engineering Relevance Score** (§10b — "could this Grants.gov funding realistically
+lead to a future engineering procurement," which gates default visibility for a
+source that is never itself auto-promoted).
 
 ## Weighted categories
 
