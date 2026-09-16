@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.services.grants_relevance_scoring import (
+    HARD_EXCLUSION_CAP,
     HIGH_VALUE_THRESHOLD,
     POSSIBLE_SIGNAL_THRESHOLD,
     RELEVANT_THRESHOLD,
@@ -138,6 +139,21 @@ def test_content_and_recipient_together_can_reach_relevant():
     )
     calculate_grants_relevance_score(item)
     assert item.grants_relevance_score >= RELEVANT_THRESHOLD
+
+
+def test_recipient_funding_and_award_maxed_together_still_cannot_reach_relevant_without_content():
+    # "Recipient type, funding amount, or generic terminology alone must never be
+    # sufficient to reach 65" -- even stacked together (three distinct recipient
+    # phrases at the cap, a $10M+ funding bonus, and a confirmed award signal), zero
+    # genuine civil/infrastructure theme means zero chance of reaching Relevant.
+    item = _item(
+        title="Grant Award Notice",
+        description="Eligible applicants: state government, county government, municipal.",
+        funding_amount=50_000_000, awardee_name="City of Example",
+    )
+    calculate_grants_relevance_score(item)
+    assert item.grants_relevance_rationale["components"]["content"] == 0
+    assert item.grants_relevance_score < RELEVANT_THRESHOLD
 
 
 def test_funding_size_bonus_gated_behind_scope_relevance():
@@ -301,6 +317,110 @@ def test_rationale_has_expected_component_keys_and_a_non_empty_narrative():
     assert rationale["why_relevant"]
     assert rationale["disclaimer"]
     assert rationale["tier"] == relevance_tier(item.grants_relevance_score)
+
+
+# --- Hard domain exclusion: false-positive regression (production incident) --------
+#
+# A diabetes research grant crossed RELEVANT_THRESHOLD in production because generic
+# positive language (a recipient phrase, funding size, an incidental content match)
+# outweighed a per-hit *penalty* for medical/research terms. HARD_EXCLUSION_CAP fixes
+# this with a ceiling instead: see _score_hard_exclusion()'s own comment. These fixtures
+# deliberately mix in forbidden generic words (infrastructure, community, facilities,
+# resilience) alongside the medical/research domain signal, to prove those words don't
+# rescue an otherwise off-topic grant -- the exact production failure mode.
+
+def test_hard_exclusion_caps_score_regardless_of_funding_size_and_recipient_type():
+    # The exact shape of the production incident: a strong recipient/funding signal
+    # plus one incidental content-adjacent word ("resiliency"), on a grant that is
+    # actually about diabetes -- must still be capped low.
+    item = _item(
+        title="Diabetes Prevention and Research Resiliency Initiative",
+        description="Eligible applicants include state government and academic institutions for "
+                     "community health resiliency programs and capital improvement of research facilities.",
+        funding_amount=15_000_000,
+    )
+    calculate_grants_relevance_score(item)
+    assert item.grants_relevance_score <= HARD_EXCLUSION_CAP
+    assert "diabetes" in item.grants_relevance_rationale["matched_hard_exclusion_phrases"]
+
+
+def test_hard_exclusion_cap_is_not_defeated_by_a_genuine_content_match():
+    # Even a real, otherwise-legitimate infrastructure theme word can't rescue a grant
+    # whose primary subject is a hard-excluded medical/research domain.
+    item = _item(
+        title="Cancer Research Center Capital Improvement and Public Works Grant",
+        description="State government applicants eligible for laboratory facilities supporting cancer research.",
+        funding_amount=20_000_000,
+    )
+    calculate_grants_relevance_score(item)
+    assert item.grants_relevance_rationale["components"]["content"] > 0  # a real theme phrase did match
+    assert item.grants_relevance_score <= HARD_EXCLUSION_CAP  # capped anyway
+
+
+def test_why_not_fit_names_the_hard_exclusion_domain():
+    item = _item(title="Biomedical Research Infrastructure Grant Program", description="state government")
+    calculate_grants_relevance_score(item)
+    why_not = item.grants_relevance_rationale["why_not_fit"]
+    assert why_not is not None
+    assert "biomedical research" in why_not.lower()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        pytest.param(
+            dict(
+                title="Diabetes Prevention and Research Infrastructure Initiative",
+                description="Eligible applicants include state government and academic institutions for "
+                             "community health resilience programs.",
+                funding_amount=15_000_000,
+            ),
+            id="diabetes research grant",
+        ),
+        pytest.param(
+            dict(
+                title="Cancer Research Center Capital Improvement Grant",
+                description="State government and public infrastructure agency applicants eligible for "
+                             "facilities supporting cancer research and community resilience planning.",
+                funding_amount=20_000_000,
+            ),
+            id="cancer research grant",
+        ),
+        pytest.param(
+            dict(
+                title="Biomedical Research Infrastructure Grant Program",
+                description="Public infrastructure agency and state government entities eligible for "
+                             "community development and facilities planning.",
+                funding_amount=10_000_000,
+            ),
+            id="biomedical research infrastructure grant",
+        ),
+        pytest.param(
+            dict(
+                title="University Laboratory Facilities Research Grant",
+                description="State government and public research university applicants eligible for "
+                             "community infrastructure and facilities development.",
+                funding_amount=5_000_000,
+            ),
+            id="university laboratory facilities research grant",
+        ),
+        pytest.param(
+            dict(
+                title="Community Health Resilience and Facilities Development Infrastructure Grant",
+                description="Supporting community development, public planning, and resilience through "
+                             "health facilities infrastructure investment.",
+            ),
+            id="community health resilience grant",
+        ),
+    ],
+)
+def test_medical_research_fixture_scores_below_visible_threshold_despite_generic_words(fields):
+    item = _item(**fields)
+    calculate_grants_relevance_score(item)
+    assert item.grants_relevance_score < POSSIBLE_SIGNAL_THRESHOLD, (
+        f"expected < {POSSIBLE_SIGNAL_THRESHOLD}, got {item.grants_relevance_score} "
+        f"(rationale: {item.grants_relevance_rationale})"
+    )
 
 
 # --- Illustrative fixture sets: 10 plausible-engineering-signal, 10 correctly-rejected -

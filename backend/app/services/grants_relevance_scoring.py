@@ -135,23 +135,59 @@ NEGATIVE_POINTS_PER_HIT = 15
 NEGATIVE_POINTS_CAP = 60
 
 _NEGATIVE_PHRASES: list[str] = [
-    "biomedical research", "medical research", "behavioral health", "social services",
-    "education program", "scholarship", "humanities", "arts and culture",
-    "workforce training", "workforce development", "academic research",
-    "law enforcement", "public health program", "scientific research",
-    "agricultural research", "farm program", "nonprofit service delivery",
+    "social services", "education program", "scholarship", "humanities",
+    "arts and culture", "workforce training", "workforce development",
+    "law enforcement", "scientific research", "agricultural research", "farm program",
+    "nonprofit service delivery",
 ]
 # "agriculture grants without water/civil/infrastructure implications" (the task's own
 # phrasing) can't be detected by keyword matching alone — a negative-phrase match here
 # is a penalty, never a veto (see calculate_grants_relevance_score), so a genuinely
 # infrastructure-relevant program that happens to also touch agriculture/research
 # (e.g. an NRCS watershed program) can still score well on its real positive signal.
+#
+# Medical/biomedical/clinical research terms (biomedical research, medical research,
+# behavioral health, academic research, public health program, and the rest of the
+# hard-exclusion domain list below) deliberately are NOT here — a production incident
+# showed a diabetes research grant crossing the Relevant Signal threshold because a
+# per-hit *penalty* here can still be outweighed by enough positive signal elsewhere
+# (funding size, a generic recipient phrase, an incidental content match). A domain
+# that clearly isn't civil/infrastructure engineering needs a ceiling, not a
+# subtraction — see _score_hard_exclusion() and HARD_EXCLUSION_CAP.
 
 
 def _score_negative(text: str) -> tuple[int, list[str]]:
     text = text.lower()
     hits = [p for p in _NEGATIVE_PHRASES if p in text]
     return min(NEGATIVE_POINTS_PER_HIT * len(hits), NEGATIVE_POINTS_CAP), hits
+
+
+# --- Hard domain exclusion: capped low regardless of any other signal --------------
+#
+# Distinct from _NEGATIVE_PHRASES above: those subtract points, so a strong enough
+# positive match can still outweigh them. These phrases mark a domain (medical/
+# biomedical/clinical research) that is clearly not civil/public-infrastructure
+# engineering — no amount of generic positive language (funding size, a recipient
+# phrase, an incidental infrastructure word) should be able to rescue a grant that is
+# primarily about one of these, so a match here caps the score outright instead.
+HARD_EXCLUSION_CAP = 20
+
+_HARD_EXCLUSION_PHRASES: list[str] = [
+    "diabetes", "cancer", "biomedical research", "clinical research", "medical research",
+    "disease research", "pharmaceutical research", "behavioral health",
+    "public health research", "epidemiology", "neuroscience", "genetics", "genomics",
+    "biological sciences", "laboratory", "patient care", "health disparities",
+    "academic research",
+]
+# All either multi-word or long/distinctive enough single words (diabetes, cancer,
+# epidemiology, neuroscience, genetics, genomics, laboratory) that plain substring
+# matching carries negligible false-positive risk — same reasoning as
+# _THEME_PHRASES_SUBSTRING, no _word_boundary_match() needed.
+
+
+def _score_hard_exclusion(text: str) -> list[str]:
+    text = text.lower()
+    return [p for p in _HARD_EXCLUSION_PHRASES if p in text]
 
 
 # --- Funding size: a bigger program is a stronger signal, but only once scope is
@@ -207,13 +243,26 @@ def _why_relevant(
 
 
 def _why_not_fit(
-    item: IntelligenceItem, negative_hits: list[str], signal_type: str, tier: str,
+    item: IntelligenceItem, negative_hits: list[str], hard_exclusion_hits: list[str],
+    no_engineering_scope: bool, signal_type: str, tier: str,
 ) -> str | None:
+    if hard_exclusion_hits:
+        return (
+            f"The available text is primarily about {', '.join(dict.fromkeys(hard_exclusion_hits))[:150]} — "
+            "a medical/biomedical/clinical research domain, not civil/public infrastructure engineering. "
+            "Capped regardless of any other positive signal (funding size, recipient type, generic language)."
+        )
     if negative_hits:
         return (
             f"The available text also references {', '.join(dict.fromkeys(negative_hits))[:150]}, "
             "which falls outside Principal's engineering/infrastructure focus — read the full listing "
             "before assuming fit."
+        )
+    if no_engineering_scope:
+        return (
+            "No genuine civil/public-infrastructure theme (water, wastewater, drainage, transportation, "
+            "utilities, and similar) was found in the available text — recipient type, funding size, or "
+            "generic language alone cannot make a grant Relevant."
         )
     if signal_type == "opportunity" and tier in ("high_value_signal", "relevant_signal"):
         # Grants.gov's connector doesn't populate location_state (see its module
@@ -242,6 +291,7 @@ def calculate_grants_relevance_score(item: IntelligenceItem) -> IntelligenceItem
     content_points, theme_hits = _score_content(text)
     recipient_points, recipient_hits = _score_recipient(text)
     negative_points, negative_hits = _score_negative(text)
+    hard_exclusion_hits = _score_hard_exclusion(text)
     scope_points = content_points + recipient_points
     funding_points, funding_note = _score_funding_size(item.funding_amount, scope_points)
     award_points, signal_type = _score_award_signal(item.awardee_name, scope_points)
@@ -249,6 +299,21 @@ def calculate_grants_relevance_score(item: IntelligenceItem) -> IntelligenceItem
     negative_penalty = min(negative_points, NEGATIVE_POINTS_CAP)
     raw = content_points + recipient_points + funding_points + award_points - negative_penalty
     score = _clamp(raw)
+
+    # Engineering-scope requirement: content_points only ever comes from a genuine
+    # _THEME_PHRASES_SUBSTRING/_THEME_WORDS_BOUNDARY match (never a bare generic word —
+    # see that list's own comment), so content_points == 0 means literally no
+    # civil/infrastructure theme was found. Recipient type, funding size, and award
+    # signal must never be sufficient on their own to reach Relevant.
+    no_engineering_scope = content_points == 0
+    if no_engineering_scope:
+        score = min(score, RELEVANT_THRESHOLD - 1)
+
+    # Hard domain exclusion — see _score_hard_exclusion()'s own comment: a ceiling, not
+    # a penalty, applied last so nothing computed above can outweigh it.
+    if hard_exclusion_hits:
+        score = min(score, HARD_EXCLUSION_CAP)
+
     tier = relevance_tier(score)
 
     item.grants_relevance_score = score
@@ -265,8 +330,9 @@ def calculate_grants_relevance_score(item: IntelligenceItem) -> IntelligenceItem
         "matched_theme_phrases": theme_hits,
         "matched_recipient_phrases": recipient_hits,
         "matched_negative_phrases": negative_hits,
+        "matched_hard_exclusion_phrases": hard_exclusion_hits,
         "why_relevant": _why_relevant(item, theme_hits, recipient_hits, funding_note, signal_type),
-        "why_not_fit": _why_not_fit(item, negative_hits, signal_type, tier),
+        "why_not_fit": _why_not_fit(item, negative_hits, hard_exclusion_hits, no_engineering_scope, signal_type, tier),
         "disclaimer": (
             "An estimate of whether this Grants.gov listing could plausibly lead to future engineering "
             "procurement — not a measure of whether Principal should apply for the grant itself, and not "
