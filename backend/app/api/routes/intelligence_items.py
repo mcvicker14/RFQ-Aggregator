@@ -9,6 +9,7 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.enums import IntelligenceCategory, JurisdictionLevel, MaturityStage, SetAsideType
 from app.models.intelligence import IntelligenceItem
+from app.models.opportunity import StatusBoardSync
 from app.models.scoring import OpportunityScore
 from app.models.user import User
 from app.schemas.intelligence import IntelligenceItemRead
@@ -214,7 +215,23 @@ def list_intelligence_items(
             )
         ).all()
         scores_by_opportunity_id = dict(rows)
+
+    # Same pattern as pursuit_score above, for the same reason: Discover needs to know
+    # each already-tracked item's *current* Status Board sync state (none yet /
+    # pending / synced / failed) to show the right action — without this, the card has
+    # no way to tell "tracked, never synced" from "tracked, already synced" from
+    # "tracked, sync failed" for any item that wasn't just tracked in this browser
+    # session, which is most of them (auto-promotion during sync tracks plenty on its
+    # own). One batched query, not N+1.
+    sync_by_opportunity_id: dict = {}
+    if promoted_ids:
+        sync_rows = db.execute(
+            select(StatusBoardSync).where(StatusBoardSync.opportunity_id.in_(promoted_ids))
+        ).scalars().all()
+        sync_by_opportunity_id = {row.opportunity_id: row for row in sync_rows}
+
     for item in items:
         item.pursuit_score = scores_by_opportunity_id.get(item.opportunity_id)
+        item.status_board_sync = sync_by_opportunity_id.get(item.opportunity_id)
 
     return items

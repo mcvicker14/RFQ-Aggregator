@@ -16,6 +16,7 @@ from app.models.enums import (
     SyncTriggeredBy,
 )
 from app.schemas.common import ORMModel
+from app.schemas.opportunity import StatusBoardSyncRead
 
 
 class IntelligenceSourceRead(ORMModel):
@@ -113,6 +114,14 @@ class IntelligenceItemRead(ORMModel):
     # yet). Set on the ORM instance by the route before serialization; see
     # list_intelligence_items()'s pursuit-score join.
     pursuit_score: int | None = None
+    # Also not an IntelligenceItem column — the Opportunity this item promoted to may
+    # or may not have ever been synced to the SOQ Status Board sheet. None for an
+    # unpromoted item, or a promoted one with no StatusBoardSync row yet (never
+    # attempted). Set on the ORM instance by the route before serialization; see
+    # list_intelligence_items()'s status-board-sync join. Discover needs this to know
+    # the *current* server-side sync state for an already-tracked item without
+    # triggering a new sync attempt just to check — see IntelligenceCard.
+    status_board_sync: StatusBoardSyncRead | None = None
     first_detected_at: datetime
     last_seen_at: datetime
     opportunity_id: UUID | None

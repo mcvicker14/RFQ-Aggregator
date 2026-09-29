@@ -6,9 +6,9 @@ from fastapi.testclient import TestClient
 from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.main import app
-from app.models.enums import ConnectorType, IntelligenceCategory, JurisdictionLevel, UserRole
+from app.models.enums import ConnectorType, IntelligenceCategory, JurisdictionLevel, StatusBoardSyncStatus, UserRole
 from app.models.intelligence import IntelligenceItem, IntelligenceSource
-from app.models.opportunity import Opportunity
+from app.models.opportunity import Opportunity, StatusBoardSync
 from app.models.scoring import OpportunityScore
 from app.models.user import User
 
@@ -475,3 +475,78 @@ def test_date_status_all_shows_everything_regardless_of_expiration(client, db):
 
     titles = {i["title"] for i in response.json()}
     assert titles == {"Available now", "Past due"}
+
+
+# --- status_board_sync: lets Discover show the right action for an already-tracked --
+# item without triggering a new sync just to check (production bug: the card had no
+# way to distinguish "tracked, never synced" from "tracked, already synced" from
+# "tracked, sync failed" for anything not tracked in the current browser session).
+
+def test_status_board_sync_is_null_for_an_unpromoted_item(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Not tracked", opportunity_id=None)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    assert response.json()[0]["status_board_sync"] is None
+
+
+def test_status_board_sync_is_null_for_a_tracked_item_never_synced(client, db):
+    opp = db.query(Opportunity).first()  # any seeded sample opportunity, no StatusBoardSync row for it
+    source = _source(db)
+    _item(db, source, external_id="A", title="Tracked, never synced", opportunity_id=opp.id)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    assert response.json()[0]["status_board_sync"] is None
+
+
+def test_status_board_sync_reflects_synced_status(client, db):
+    opp = db.query(Opportunity).first()
+    db.add(StatusBoardSync(opportunity_id=opp.id, status=StatusBoardSyncStatus.SYNCED, sheet_row_number=52))
+    source = _source(db)
+    _item(db, source, external_id="A", title="On the board", opportunity_id=opp.id)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    body = response.json()[0]["status_board_sync"]
+    assert body["status"] == "synced"
+    assert body["sheet_row_number"] == 52
+
+
+def test_status_board_sync_reflects_failed_status_and_error(client, db):
+    opp = db.query(Opportunity).first()
+    db.add(StatusBoardSync(
+        opportunity_id=opp.id, status=StatusBoardSyncStatus.FAILED,
+        last_error="not_configured: STATUS_BOARD_WEBHOOK_URL is not set.",
+    ))
+    source = _source(db)
+    _item(db, source, external_id="A", title="Sync failed", opportunity_id=opp.id)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    body = response.json()[0]["status_board_sync"]
+    assert body["status"] == "failed"
+    assert "STATUS_BOARD_WEBHOOK_URL" in body["last_error"]
+
+
+def test_status_board_sync_and_pursuit_score_are_both_populated_together(client, db):
+    # Regression guard: these are two independent batched joins computed in the same
+    # loop -- must not clobber each other (this test would have caught a bug where
+    # adding one accidentally dropped the other's assignment).
+    opp = db.query(Opportunity).first()
+    db.add(StatusBoardSync(opportunity_id=opp.id, status=StatusBoardSyncStatus.SYNCED))
+    _score_opportunity(db, opp.id, score=91, computed_at=NOW)
+    source = _source(db)
+    _item(db, source, external_id="A", title="Both populated", opportunity_id=opp.id)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    body = response.json()[0]
+    assert body["pursuit_score"] == 91
+    assert body["status_board_sync"]["status"] == "synced"

@@ -614,6 +614,12 @@ export interface IntelligenceItem {
   // Not an IntelligenceItem column — see the backend schema's own comment. The
   // latest Principal Pursuit Score for the Opportunity this item promoted to, if any.
   pursuit_score: number | null;
+  // Also not a column — the *current* server-side Status Board sync state for the
+  // Opportunity this item promoted to. null for an unpromoted item, or a promoted one
+  // never synced yet. This is what lets Discover show the right action for an
+  // already-tracked item (most items, since auto-promotion tracks plenty on its own)
+  // without triggering a new sync just to find out — see IntelligenceCard.
+  status_board_sync: StatusBoardSync | null;
   first_detected_at: string;
   last_seen_at: string;
   opportunity_id: string | null;

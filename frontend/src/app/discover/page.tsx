@@ -231,7 +231,10 @@ function DiscoverPageInner() {
     }
   }
 
-  async function handleRetrySync(item: IntelligenceItem) {
+  // Syncs an already-tracked item's existing Opportunity to the Status Board — used
+  // both the first time (item never synced, however it got tracked) and to retry
+  // after a failure. Never creates a second Opportunity either way.
+  async function handleSyncStatusBoard(item: IntelligenceItem) {
     if (!item.opportunity_id) return;
     const notes = item.grants_relevance_rationale?.why_relevant ?? item.sam_relevance_rationale?.why_relevant;
     await attemptStatusBoardSync(item.id, item.opportunity_id, notes);
@@ -540,7 +543,7 @@ function DiscoverPageInner() {
                       key={item.id}
                       item={item}
                       onTrack={handleTrack}
-                      onRetrySync={handleRetrySync}
+                      onSyncStatusBoard={handleSyncStatusBoard}
                       statusBoardSync={syncStates[item.id]}
                     />
                   ))}

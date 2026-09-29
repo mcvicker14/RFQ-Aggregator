@@ -48,25 +48,32 @@ function formatMoney(value: number | null): string | null {
 export function IntelligenceCard({
   item,
   onTrack,
-  onRetrySync,
+  onSyncStatusBoard,
   statusBoardSync,
 }: {
   item: IntelligenceItem;
   onTrack: (item: IntelligenceItem) => Promise<void>;
-  // Session-local: known only for items tracked (or retried) during this Discover
-  // visit — the database is always the source of truth regardless, this is purely a
-  // "what just happened when I clicked" display. An item tracked in an earlier
-  // session simply shows the plain Tracked state below, with no stale claim either way.
-  onRetrySync?: (item: IntelligenceItem) => Promise<void>;
+  // Syncs the already-existing Opportunity to the Status Board — used both the first
+  // time (item.status_board_sync is null/absent) and to retry after a failure. Never
+  // creates a second Opportunity; see discover/page.tsx's handleSyncStatusBoard.
+  onSyncStatusBoard?: (item: IntelligenceItem) => Promise<void>;
+  // Session-local, optimistic: set the moment *this* Discover visit tracks or syncs
+  // this item, before a refetch would otherwise reflect it. Overlays
+  // item.status_board_sync (the server's own current state, populated by the backend
+  // for every item regardless of when it was tracked) rather than replacing it — see
+  // effectiveSync below. This is why an item auto-promoted or tracked in an earlier
+  // session still shows its real sync state instead of looking untouched.
   statusBoardSync?: Pick<StatusBoardSync, "status" | "last_error"> | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [tracking, setTracking] = useState(false);
   const [trackError, setTrackError] = useState<string | null>(null);
-  const [retrying, setRetrying] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const tracked = !!item.opportunity_id;
   const canTrack = !tracked && PROMOTABLE_CATEGORIES.has(item.intelligence_category);
+  const effectiveSync = statusBoardSync ?? item.status_board_sync;
+  const syncStatus = effectiveSync?.status;
 
   const rationale = item.grants_relevance_rationale ?? item.sam_relevance_rationale;
   const relevanceScore = item.grants_relevance_score ?? item.sam_relevance_score;
@@ -97,13 +104,13 @@ export function IntelligenceCard({
     }
   }
 
-  async function handleRetrySync() {
-    if (!onRetrySync) return;
-    setRetrying(true);
+  async function handleSyncStatusBoard() {
+    if (!onSyncStatusBoard) return;
+    setSyncing(true);
     try {
-      await onRetrySync(item);
+      await onSyncStatusBoard(item);
     } finally {
-      setRetrying(false);
+      setSyncing(false);
     }
   }
 
@@ -213,32 +220,49 @@ export function IntelligenceCard({
       )}
 
       <div className="mt-auto flex items-center justify-between gap-2 pt-1.5">
-        {tracked ? (
-          statusBoardSync?.status === "failed" ? (
-            <div className="flex items-center gap-1.5">
-              <span className="inline-flex items-center gap-1 rounded-md bg-warning/10 px-2.5 py-1.5 text-xs font-semibold text-warning">
-                ⚠ Tracked — Status Board sync failed
-              </span>
-              <Button size="sm" variant="outline" onClick={handleRetrySync} disabled={retrying}>
-                {retrying ? "Retrying…" : "Retry"}
-              </Button>
-            </div>
+        {!tracked ? (
+          canTrack ? (
+            <Button size="sm" onClick={handleTrack} disabled={tracking}>
+              {tracking ? "Tracking…" : "Track + Add to Status Board"}
+            </Button>
           ) : (
+            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+              View Intelligence
+            </Button>
+          )
+        ) : syncStatus === "synced" ? (
+          // A status, not an action — "Tracked in app" and "On Status Board" are two
+          // separate facts, and this item already has both, so one pill covers it.
+          <Link
+            href={`/opportunities/${item.opportunity_id}`}
+            className="inline-flex items-center gap-1 rounded-md bg-success/10 px-2.5 py-1.5 text-xs font-semibold text-success transition-colors hover:bg-success/15"
+          >
+            ✓ On Status Board
+          </Link>
+        ) : syncStatus === "failed" ? (
+          <div className="flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-1 rounded-md bg-warning/10 px-2.5 py-1.5 text-xs font-semibold text-warning">
+              ⚠ Status Board sync failed
+            </span>
+            <Button size="sm" variant="outline" onClick={handleSyncStatusBoard} disabled={syncing}>
+              {syncing ? "Retrying…" : "Retry Status Board"}
+            </Button>
+          </div>
+        ) : (
+          // Tracked (often auto-promoted, never touched by this card before) but
+          // never synced — Tracked-in-app and Add-to-Status-Board are shown together,
+          // never collapsed into one, per the two being separate states.
+          <div className="flex items-center gap-1.5">
             <Link
               href={`/opportunities/${item.opportunity_id}`}
-              className="inline-flex items-center gap-1 rounded-md bg-success/10 px-2.5 py-1.5 text-xs font-semibold text-success transition-colors hover:bg-success/15"
+              className="text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
             >
-              ✓ Tracked{statusBoardSync?.status === "synced" ? " — on Status Board" : " — view in Pipeline"}
+              Tracked in app
             </Link>
-          )
-        ) : canTrack ? (
-          <Button size="sm" onClick={handleTrack} disabled={tracking}>
-            {tracking ? "Tracking…" : "Track + Add to Status Board"}
-          </Button>
-        ) : (
-          <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
-            View Intelligence
-          </Button>
+            <Button size="sm" onClick={handleSyncStatusBoard} disabled={syncing}>
+              {syncing ? "Syncing…" : "Add to Status Board"}
+            </Button>
+          </div>
         )}
         {item.source_url && (
           <a
@@ -252,8 +276,8 @@ export function IntelligenceCard({
         )}
       </div>
       {trackError && <p className="text-xs text-destructive">{trackError}</p>}
-      {statusBoardSync?.status === "failed" && statusBoardSync.last_error && (
-        <p className="text-xs text-warning">{statusBoardSync.last_error}</p>
+      {syncStatus === "failed" && effectiveSync?.last_error && (
+        <p className="text-xs text-warning">{effectiveSync.last_error}</p>
       )}
     </Card>
   );
