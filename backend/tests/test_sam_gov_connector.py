@@ -164,6 +164,42 @@ def test_extract_place_of_performance_falls_back_to_office_address():
     assert _extract_place_of_performance(notice) == ("Baton Rouge", "LA")
 
 
+# --- location_state overflow (production incident: StringDataRightTruncation on
+# character varying(2), traced to office_address.get("state") / placeOfPerformance.
+# state.code carrying a non-2-letter value for an OCONUS office/location) -----------
+
+def test_extract_place_of_performance_drops_oversized_office_address_state():
+    # Reproduces the shape most likely behind the "FY 27 A-E IDIQ Solicitation"
+    # failure (externalId aceda6b98f584e5d9794779153980897): an IDIQ has no single
+    # place of performance, so placeOfPerformance is empty and officeAddress.state --
+    # here a Japanese prefecture, not a US state -- is the only candidate.
+    notice = _sam_notice(
+        placeOfPerformance={}, officeAddress={"city": "Yokosuka", "state": "Kanagawa"},
+    )
+    assert _extract_place_of_performance(notice) == ("Yokosuka", None)
+
+
+def test_extract_place_of_performance_drops_oversized_place_of_performance_state_code():
+    # Reproduces the shape most likely behind the "Ultrasonic Testing...Yokosuka
+    # Japan" failure (externalId ecf09bd00a054a128403391337797adf): a real place of
+    # performance is given, but its own state.code isn't a US 2-letter abbreviation.
+    notice = _sam_notice(
+        placeOfPerformance={"city": {"name": "Yokosuka"}, "state": {"code": "Kanagawa"}},
+        officeAddress={"city": "Yokosuka", "state": "Kanagawa"},
+    )
+    assert _extract_place_of_performance(notice) == ("Yokosuka", None)
+
+
+def test_extract_place_of_performance_keeps_valid_two_letter_state():
+    notice = _sam_notice(placeOfPerformance={}, officeAddress={"city": "Baton Rouge", "state": "la"})
+    assert _extract_place_of_performance(notice) == ("Baton Rouge", "LA")  # lowercase in the wild, normalized to upper
+
+
+def test_extract_place_of_performance_handles_missing_state_entirely():
+    notice = _sam_notice(placeOfPerformance={"city": {"name": "Yokosuka"}}, officeAddress={"city": "Yokosuka"})
+    assert _extract_place_of_performance(notice) == ("Yokosuka", None)
+
+
 # --- Staleness (the "active/inactive" investigation point) -------------------------
 
 def _raw(category, proposal_due_at=None) -> RawIntelligenceItem:
@@ -459,3 +495,61 @@ def test_run_sync_persists_relevant_notice_and_prevents_duplicate_on_resync(db, 
     assert run2.items_updated == 1  # re-processed, not duplicated
     rows = db.execute(select(IntelligenceItem).where(IntelligenceItem.external_id == "abc123")).scalars().all()
     assert len(rows) == 1
+
+
+# --- Production incident: StringDataRightTruncation on location_state (VARCHAR(2)) -
+# Two real notices failed with "value too long for type character varying(2)" and no
+# column name in the DB error. Reproduces both through the real run_sync() pipeline,
+# using the field shape _extract_place_of_performance's tests above prove triggers the
+# same failure this connector was hitting in production, and confirms both now
+# process successfully instead of landing in items_errored.
+
+def test_run_sync_processes_the_two_failing_production_notices_successfully(db, monkeypatch):
+    connector = get_intelligence_connector("sam_gov")
+    monkeypatch.setattr(sam_gov_module.settings, "SAM_GOV_API_KEY", "test-key")
+
+    idiq_notice = _sam_notice(
+        noticeId="aceda6b98f584e5d9794779153980897",
+        title="FY 27 A-E IDIQ Solicitation",
+        uiLink="https://sam.gov/opp/aceda6b98f584e5d9794779153980897/view",
+        placeOfPerformance={},  # an IDIQ has no single place of performance
+        officeAddress={"city": "Yokosuka", "state": "Kanagawa"},
+    )
+    ultrasonic_notice = _sam_notice(
+        noticeId="ecf09bd00a054a128403391337797adf",
+        title="Ultrasonic Testing Services, Yokosuka, Japan",
+        uiLink="https://sam.gov/opp/ecf09bd00a054a128403391337797adf/view",
+        placeOfPerformance={"city": {"name": "Yokosuka"}, "state": {"code": "Kanagawa"}},
+        officeAddress={"city": "Yokosuka", "state": "Kanagawa"},
+    )
+    monkeypatch.setattr(
+        connector, "fetch",
+        lambda since, **filters: [
+            connector._to_raw_intelligence_item(idiq_notice, RETRIEVED_AT),
+            connector._to_raw_intelligence_item(ultrasonic_notice, RETRIEVED_AT),
+        ],
+    )
+
+    seed_intelligence_sources(db)
+    source = db.execute(select(IntelligenceSource).where(IntelligenceSource.name == "SAM.gov")).scalars().one()
+
+    run = run_sync(db, source, SyncTriggeredBy.MANUAL)
+
+    assert run.items_errored == 0
+    assert run.items_created == 2
+    assert run.status == SyncRunStatus.SUCCESS
+
+    idiq = db.execute(
+        select(IntelligenceItem).where(IntelligenceItem.external_id == "aceda6b98f584e5d9794779153980897")
+    ).scalars().one()
+    ultrasonic = db.execute(
+        select(IntelligenceItem).where(IntelligenceItem.external_id == "ecf09bd00a054a128403391337797adf")
+    ).scalars().one()
+    assert idiq.location_state is None  # no valid US state for an OCONUS office — not truncated, not guessed
+    assert ultrasonic.location_state is None
+    assert idiq.location_city == "Yokosuka"
+    assert ultrasonic.location_city == "Yokosuka"
+    # The original, unmodified "Kanagawa" value is never lost even though it isn't a
+    # valid location_state — full source payload is always preserved.
+    assert idiq.raw_metadata["officeAddress"]["state"] == "Kanagawa"
+    assert ultrasonic.raw_metadata["placeOfPerformance"]["state"]["code"] == "Kanagawa"

@@ -184,6 +184,42 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return None
 
 
+def _normalize_state_code(value: str | None, *, notice_id: str = "<unknown>") -> str | None:
+    """location_state (IntelligenceItem/Opportunity) is String(2) everywhere it's used
+    in this app as a plain USPS state/territory abbreviation (e.g. "LA", "PR", "DC") —
+    never a free-text value. SAM.gov's own representation of "state" is not reliably
+    shaped that way, especially for an OCONUS office or place of performance (no US
+    state applies at all): officeAddress.state in particular is a plain string with no
+    guaranteed format, unlike placeOfPerformance.state.code.
+
+    Production incident: two live notices (FY 27 A-E IDIQ Solicitation,
+    externalId aceda6b98f584e5d9794779153980897; an Ultrasonic Testing task in
+    Yokosuka, Japan, externalId ecf09bd00a054a128403391337797adf) failed to persist
+    with psycopg.errors.StringDataRightTruncation: value too long for type character
+    varying(2) — confirmed empirically against a local Postgres instance that this
+    error carries no column/table name in its .diag fields (unlike a named
+    constraint violation), so it gave no indication of which field or record was at
+    fault. Both are plausibly posted by (or performed at) an overseas office, where
+    this exact fallback would receive something other than a 2-letter code. Rather
+    than special-case those two records, this rejects *any* value that isn't shaped
+    like a real code — the only correct fix, since there is no valid 2-letter US state
+    for a non-US location anyway. The original value is never lost: raw_metadata
+    always keeps the full, unmodified source record regardless of what this returns.
+    """
+    if not value:
+        return None
+    candidate = value.strip().upper()
+    if len(candidate) == 2 and candidate.isalpha():
+        return candidate
+    logger.warning(
+        "SAM.gov connector: dropping non-2-letter state value %r for notice %s — no "
+        "valid US state/territory code applies (likely an OCONUS location); "
+        "location_state will be left unset for this record.",
+        value, notice_id,
+    )
+    return None
+
+
 def _extract_place_of_performance(item: dict) -> tuple[str | None, str | None]:
     """Returns (city, state). Shared by the field mapper and the relevance scorer so
     the two don't drift on how they read the same nested shape."""
@@ -195,7 +231,9 @@ def _extract_place_of_performance(item: dict) -> tuple[str | None, str | None]:
     city = None
     if isinstance(place_of_performance.get("city"), dict):
         city = place_of_performance["city"].get("name")
-    return city or office_address.get("city"), state or office_address.get("state")
+    notice_id = item.get("noticeId", "<unknown>")
+    normalized_state = _normalize_state_code(state or office_address.get("state"), notice_id=notice_id)
+    return city or office_address.get("city"), normalized_state
 
 
 def _is_expired_opportunity(raw: RawIntelligenceItem) -> bool:

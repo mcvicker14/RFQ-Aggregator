@@ -292,6 +292,32 @@ def test_validate_connector_fields_allows_plain_scalars():
     )  # must not raise
 
 
+# --- Shared string-too-long-for-its-column defense ----------------------------------
+#
+# Production once hit psycopg.errors.StringDataRightTruncation: value too long for
+# type character varying(2) from a SAM.gov OCONUS office's "state" value landing in
+# location_state — with no column name anywhere in the DB error (confirmed empirically
+# against a local Postgres instance: StringDataRightTruncation carries no
+# column_name/table_name in .diag, unlike a named constraint violation). The
+# SAM.gov-specific fix is _normalize_state_code in app/connectors/sam_gov.py; this
+# defense in _validate_connector_fields protects every connector — current and
+# future — from the same failure mode landing as an unattributed DB error again.
+
+def test_validate_connector_fields_raises_specific_error_for_oversized_string():
+    with pytest.raises(ValueError, match="location_state") as exc_info:
+        _validate_connector_fields("Test Source", {"location_state": "Kanagawa"})
+    assert "2 characters" in str(exc_info.value)
+    assert "Kanagawa" in str(exc_info.value)
+
+
+def test_validate_connector_fields_allows_a_string_within_its_column_length():
+    _validate_connector_fields("Test Source", {"location_state": "LA"})  # must not raise
+
+
+def test_validate_connector_fields_ignores_length_for_unbounded_text_columns():
+    _validate_connector_fields("Test Source", {"description": "x" * 10_000})  # Text column — no length cap, must not raise
+
+
 # --- Grant Engineering Relevance Score wiring (calculate_grants_relevance_score) ---
 #
 # Uses an IntelligenceSource literally named "Grants.gov" -- the scoring engine keys

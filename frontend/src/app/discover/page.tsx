@@ -76,6 +76,22 @@ const DATE_STATUS_SECTION_LABEL: Partial<Record<IntelligenceCategory, Record<str
   pre_solicitation: { current: "Coming Soon", expired: "Expired", all: "All Dates" },
 };
 
+// Overrides CATEGORY_META's own blurb (below) for the two categories a deadline means
+// anything for, so the section description never claims "respond to now" while
+// showing Expired records. "current" isn't listed — CATEGORY_META's blurb already is
+// the Available Now / Coming Soon wording, so that's the fallback for it and for
+// every category/date_status combination not listed here.
+const DATE_STATUS_SECTION_BLURB: Partial<Record<IntelligenceCategory, Record<string, string>>> = {
+  live_opportunity: {
+    expired: "Past solicitations retained for history and reference.",
+    all: "Solicitations Principal can respond to now, plus past ones kept for reference.",
+  },
+  pre_solicitation: {
+    expired: "Past pre-solicitations retained for history and reference.",
+    all: "Early positioning window records, current and past.",
+  },
+};
+
 const DEADLINE_OPTIONS = [
   { value: "any", label: "Any time" },
   { value: "overdue", label: "Past due" },
@@ -503,6 +519,7 @@ function DiscoverPageInner() {
             const meta = CATEGORY_META[c];
             const Icon = meta.icon;
             const dateStatusLabel = DATE_STATUS_SECTION_LABEL[c]?.[dateStatus];
+            const blurb = DATE_STATUS_SECTION_BLURB[c]?.[dateStatus] ?? meta.blurb;
             return (
               <div key={c}>
                 <div className="mb-2.5 flex items-baseline gap-2">
@@ -515,7 +532,7 @@ function DiscoverPageInner() {
                       {dateStatusLabel}
                     </span>
                   )}
-                  <span className="text-xs text-muted-foreground">— {meta.blurb}</span>
+                  <span className="text-xs text-muted-foreground">— {blurb}</span>
                 </div>
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {categoryItems.map((item) => (

@@ -189,29 +189,54 @@ _INTELLIGENCE_ITEM_COLUMNS = {c.key: c for c in sa_inspect(IntelligenceItem).col
 
 
 def _validate_connector_fields(source_name: str, fields: dict) -> None:
-    """Defends every connector, not just one, against the failure mode that produced
-    `psycopg.ProgrammingError: cannot adapt type 'dict'` in production: a connector
-    passing a structured value (a nested object from the source API) straight through
-    into a column that isn't JSONB. Left unchecked, that only surfaces as a cryptic
-    low-level DBAPI error at db.flush() — this turns it into an immediate, specific
-    error naming the connector, the field, and the value, raised before it ever
-    reaches the database. A connector fixing its own mapping (extracting a scalar, or
-    routing genuinely structured data into raw_metadata) is always the real fix;
-    this is the safety net for the next connector that gets it wrong. See
-    docs/PHASE2_ARCHITECTURE.md §6/§13.
+    """Defends every connector, not just one, against two failure modes that have each
+    already happened in production, left unchecked, as a cryptic low-level DBAPI error
+    at db.flush() with no indication of which field or record was at fault:
+
+    1. `psycopg.ProgrammingError: cannot adapt type 'dict'` — a connector passing a
+       structured value (a nested object from the source API) straight through into a
+       column that isn't JSONB.
+    2. `psycopg.errors.StringDataRightTruncation: value too long for type character
+       varying(N)` — a connector passing a string longer than its column's declared
+       length (e.g. SAM.gov's OCONUS-office "state" values into location_state's
+       String(2) — see _normalize_state_code in app/connectors/sam_gov.py for that
+       specific fix). Empirically confirmed against a local Postgres instance that
+       this error's `.diag.column_name`/`.diag.table_name` are both None (unlike a
+       named constraint violation) — Postgres itself never names the column for a
+       plain type-length violation, so this check is the only way the failing field
+       becomes visible at all, in Source History's per-item error detail, instead of
+       an opaque message with no way to tell which of hundreds of fetched records or
+       which field caused it.
+
+    Either way this turns the failure into an immediate, specific error naming the
+    connector, the field, and the value, raised before it ever reaches the database. A
+    connector fixing its own mapping (extracting a scalar, normalizing, or routing
+    genuinely structured data into raw_metadata) is always the real fix; this is the
+    safety net for the next connector — or the next unexpected value from this one —
+    that gets it wrong. See docs/PHASE2_ARCHITECTURE.md §6/§13.
     """
     for key, value in fields.items():
-        if not isinstance(value, (dict, list)):
-            continue
         column = _INTELLIGENCE_ITEM_COLUMNS.get(key)
-        if column is None or isinstance(column.type, JSONB):
-            continue  # unknown key (ORM will raise its own clear error) or a real JSON column
-        raise ValueError(
-            f"{source_name} connector produced a {type(value).__name__} for field '{key}', but "
-            f"IntelligenceItem.{key} is a {type(column.type).__name__} column, not JSONB. "
-            f"The connector's field mapping needs to extract a scalar (e.g. value.get('name')) "
-            f"instead of passing the raw object through. Value: {value!r}"
-        )
+        if column is None:
+            continue  # unknown key — the ORM will raise its own clear error
+        if isinstance(value, (dict, list)):
+            if isinstance(column.type, JSONB):
+                continue  # a real JSON column — structured data belongs here
+            raise ValueError(
+                f"{source_name} connector produced a {type(value).__name__} for field '{key}', but "
+                f"IntelligenceItem.{key} is a {type(column.type).__name__} column, not JSONB. "
+                f"The connector's field mapping needs to extract a scalar (e.g. value.get('name')) "
+                f"instead of passing the raw object through. Value: {value!r}"
+            )
+        if isinstance(value, str):
+            max_length = getattr(column.type, "length", None)
+            if max_length is not None and len(value) > max_length:
+                raise ValueError(
+                    f"{source_name} connector produced a {len(value)}-character value for field "
+                    f"'{key}', but IntelligenceItem.{key} only allows {max_length} characters. The "
+                    f"connector's field mapping needs to normalize, truncate, or drop this value "
+                    f"instead of passing it through unchanged. Value: {value!r}"
+                )
 
 
 def _upsert_intelligence_item(db: Session, source: IntelligenceSource, raw) -> tuple[IntelligenceItem, bool]:
