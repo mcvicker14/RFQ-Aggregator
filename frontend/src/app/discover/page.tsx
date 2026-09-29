@@ -16,7 +16,7 @@ import {
   TrendingUp,
   Landmark,
 } from "lucide-react";
-import { agenciesApi, intelligenceApi, intelligenceItemsApi, opportunitiesApi } from "@/lib/api/resources";
+import { agenciesApi, intelligenceApi, intelligenceItemsApi, opportunitiesApi, settingsApi } from "@/lib/api/resources";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -147,6 +147,10 @@ function DiscoverPageInner() {
   // a manual visit, defaulting to the same "include samples" behavior as elsewhere) —
   // never re-derived, so this page's count can't drift from the number that linked here.
   const [hideSampleData, setHideSampleData] = useState(searchParams.get("include_sample_data") === "false");
+  // Production never seeds or displays sample data (see backend/seed/seed.py) -- the
+  // "Hide sample data" control has nothing left to do there, so it's hidden rather
+  // than shown with no effect. Defaults to true (shown) until the real value loads.
+  const [sampleDataEnabled, setSampleDataEnabled] = useState(true);
   const [samRelevanceTier, setSamRelevanceTier] = useState("relevant");
   const [grantsRelevanceTier, setGrantsRelevanceTier] = useState("relevant_signal");
   const [sortBy, setSortBy] = useState("first_detected_at");
@@ -159,6 +163,7 @@ function DiscoverPageInner() {
       setSources(all.filter((s) => s.is_enabled).sort((a, b) => a.name.localeCompare(b.name)))
     );
     agenciesApi.list().then((all) => setAgencies([...all].sort((a, b) => a.name.localeCompare(b.name))));
+    settingsApi.getHideSampleData().then((r) => setSampleDataEnabled(r.sample_data_enabled)).catch(() => {});
   }, []);
 
   const params = useMemo(
@@ -366,10 +371,12 @@ function DiscoverPageInner() {
               {GRANTS_RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
             </SelectContent>
           </Select>
-          <label className="flex items-center gap-1.5 rounded-md border border-input bg-card px-3 py-1.5 text-sm text-foreground">
-            <input type="checkbox" checked={hideSampleData} onChange={(e) => setHideSampleData(e.target.checked)} />
-            Hide sample data
-          </label>
+          {sampleDataEnabled && (
+            <label className="flex items-center gap-1.5 rounded-md border border-input bg-card px-3 py-1.5 text-sm text-foreground">
+              <input type="checkbox" checked={hideSampleData} onChange={(e) => setHideSampleData(e.target.checked)} />
+              Hide sample data
+            </label>
+          )}
           <p className="basis-full text-xs text-muted-foreground">
             SAM.gov and Grants.gov records are broadly retrieved for auditability but only shown here at Relevant/Relevant
             Signal or above by default — widen either Relevance filter to see lower-confidence matches or every record

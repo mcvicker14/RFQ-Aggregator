@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.deps import get_current_user, require_admin
 from app.db.session import get_db
 from app.models.scoring import ScoringWeightProfile
@@ -15,11 +16,19 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 class HideSampleDataSetting(BaseModel):
     hide_sample_data_by_default: bool
+    # Not stored -- computed from settings.is_production every request. Production
+    # never seeds sample data (see seed/seed.py), so there's never anything for this
+    # setting to hide there; the frontend uses this to hide the toggle itself rather
+    # than show a control with no possible effect. True in dev/test.
+    sample_data_enabled: bool = True
 
 
 @router.get("/hide-sample-data", response_model=HideSampleDataSetting)
 def get_hide_sample_data(db: Session = Depends(get_db), _current: User = Depends(get_current_user)):
-    return HideSampleDataSetting(hide_sample_data_by_default=hide_sample_data_by_default(db))
+    return HideSampleDataSetting(
+        hide_sample_data_by_default=hide_sample_data_by_default(db),
+        sample_data_enabled=not get_settings().is_production,
+    )
 
 
 @router.patch("/hide-sample-data", response_model=HideSampleDataSetting)

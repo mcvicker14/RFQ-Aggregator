@@ -165,10 +165,20 @@ function UsersPanel({ isAdmin }: { isAdmin: boolean }) {
 
 function SampleDataPanel({ isAdmin }: { isAdmin: boolean }) {
   const [hideByDefault, setHideByDefault] = useState<boolean | null>(null);
+  // Production never seeds or displays sample data (see backend/seed/seed.py) -- this
+  // whole panel would control a toggle with nothing left to do there, so it's hidden
+  // rather than shown disabled. Defaults to true (shown) until the real value loads,
+  // matching every other environment-gated control's fail-open-in-dev posture here.
+  const [sampleDataEnabled, setSampleDataEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    settingsApi.getHideSampleData().then((r) => setHideByDefault(r.hide_sample_data_by_default)).catch(() => setHideByDefault(false));
+    settingsApi.getHideSampleData()
+      .then((r) => {
+        setHideByDefault(r.hide_sample_data_by_default);
+        setSampleDataEnabled(r.sample_data_enabled);
+      })
+      .catch(() => setHideByDefault(false));
   }, []);
 
   async function toggle() {
@@ -182,6 +192,7 @@ function SampleDataPanel({ isAdmin }: { isAdmin: boolean }) {
     }
   }
 
+  if (!sampleDataEnabled) return null;
   if (hideByDefault === null) return <LoadingState />;
 
   return (

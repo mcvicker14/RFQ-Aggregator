@@ -1,10 +1,18 @@
-"""Seeds reference/system data (always) and, unless --no-demo is passed, realistic
-SAMPLE DATA opportunities clearly flagged is_sample_data=True (spec §30). Safe to
-re-run — each section checks for existing rows before inserting.
+"""Seeds reference/system data (always) and, unless --no-demo is passed OR ENV is
+production, realistic SAMPLE DATA opportunities clearly flagged is_sample_data=True
+(spec §30). Safe to re-run — each section checks for existing rows before inserting.
+
+Production never seeds sample data regardless of --no-demo: this is the single
+Dockerfile CMD every deploy and restart runs (`alembic upgrade head && python -m
+seed.seed && uvicorn ...`), so relying on someone remembering to pass --no-demo would
+mean one un-flagged run repopulates all 14 sample opportunities. settings.is_production
+(ENV=production, set in render.yaml) is checked directly in main() instead — the same
+existing production/dev distinction app/main.py already uses to refuse an insecure
+default JWT secret in production.
 
 Usage (from backend/, with the venv active):
-    python -m seed.seed                 # reference data + demo/sample data
-    python -m seed.seed --no-demo       # reference data only (for a real deployment)
+    python -m seed.seed                 # reference data + demo/sample data (dev/test only)
+    python -m seed.seed --no-demo       # reference data only, any environment
 """
 import argparse
 import sys
@@ -130,6 +138,16 @@ def seed_admin_user(db: Session, email: str, full_name: str, password: str) -> U
     db.commit()
     db.refresh(user)
     return user
+
+
+def should_seed_demo_data(*, no_demo_flag: bool) -> bool:
+    """Production never seeds sample data, regardless of --no-demo -- this is checked
+    here (settings.is_production, not a passed-in flag) specifically so it can never be
+    bypassed by an un-flagged invocation, which is exactly how the Dockerfile's own CMD
+    calls this script on every container start/restart. See module docstring."""
+    if settings.is_production:
+        return False
+    return not no_demo_flag
 
 
 def seed_demo_data(db: Session, admin: User) -> None:
@@ -557,8 +575,11 @@ def main():
 
         admin = seed_admin_user(db, args.admin_email, args.admin_name, password)
 
-        if not args.no_demo:
+        if should_seed_demo_data(no_demo_flag=args.no_demo):
             seed_demo_data(db, admin)
+        elif settings.is_production:
+            print("ENV=production — skipping SAMPLE DATA seeding regardless of --no-demo "
+                  "(production must never seed or display demo/sample records).")
 
         if generated:
             print("\n" + "=" * 70)

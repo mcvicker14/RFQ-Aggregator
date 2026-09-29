@@ -244,7 +244,8 @@ export const settingsApi = {
     ),
   updateScoringWeights: (data: Record<string, unknown>) =>
     api.patch("/api/settings/scoring-weights", data),
-  getHideSampleData: () => api.get<{ hide_sample_data_by_default: boolean }>("/api/settings/hide-sample-data"),
+  getHideSampleData: () =>
+    api.get<{ hide_sample_data_by_default: boolean; sample_data_enabled: boolean }>("/api/settings/hide-sample-data"),
   setHideSampleData: (value: boolean) =>
     api.patch<{ hide_sample_data_by_default: boolean }>("/api/settings/hide-sample-data", { hide_sample_data_by_default: value }),
 };
