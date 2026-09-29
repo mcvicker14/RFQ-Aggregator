@@ -70,14 +70,15 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_MODEL: str = "claude-sonnet-5"
 
-    # SOQ Status Board (Google Sheets) sync — see app/services/status_board_sync.py.
-    # GOOGLE_SERVICE_ACCOUNT_JSON is the full contents of a service account's JSON key
-    # file (never a real value in source control; set only via Render's environment
-    # variables). The spreadsheet ID is not a secret (it's visible in the sheet's own
-    # URL) — defaulted to the actual SOQ Status Board so this degrades to "just needs
-    # the credential" rather than also needing the ID re-entered.
-    GOOGLE_SERVICE_ACCOUNT_JSON: str | None = None
-    SOQ_STATUS_BOARD_SPREADSHEET_ID: str = "12KpUjFjx4AnoJt1KOlj9qFuQXZaTFGrVX-c3ExJ55GE"
+    # SOQ Status Board sync — see app/services/status_board_sync.py and
+    # app/services/status_board_webhook_client.py. This app holds no Google
+    # credentials at all; it POSTs to a Google Apps Script Web App (bound to the SOQ
+    # Status Board sheet) that does the actual read/write, authenticated by a shared
+    # secret this app sends in the request body. Neither value is a real value in
+    # source control; set both only via Render's environment variables. See
+    # google-apps-script/status_board_sync.gs for the script these point at.
+    STATUS_BOARD_WEBHOOK_URL: str | None = None
+    STATUS_BOARD_WEBHOOK_SECRET: str | None = None
 
     # Object storage (Phase 2 — local disk is the default StorageBackend today)
     STORAGE_BACKEND: str = "local"  # "local" | "s3" | "azure_blob"
