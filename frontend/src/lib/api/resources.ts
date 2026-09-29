@@ -220,6 +220,7 @@ export interface IntelligenceItemListParams {
   set_aside?: string;
   include_sample_data?: boolean;
   unpromoted_only?: boolean;
+  date_status?: string;
   sam_relevance_tier?: string;
   grants_relevance_tier?: string;
   sort_by?: string;

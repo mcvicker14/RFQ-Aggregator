@@ -7,7 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SampleDataBadge, RelevanceTierBadge, IntelligenceCategoryBadge } from "@/components/domain/badges";
-import { cn, formatDate, daysUntil } from "@/lib/utils";
+import { cn, formatDate, formatDeadline, daysUntil } from "@/lib/utils";
 import type { IntelligenceItem, StatusBoardSync } from "@/types";
 
 // Mirrors backend/app/services/intelligence_sync.py's PROMOTABLE_CATEGORIES exactly —
@@ -75,9 +75,11 @@ export function IntelligenceCard({
     : item.sam_relevance_rationale?.tier;
   const relevanceLabel = item.grants_relevance_score !== null ? "Grant Relevance" : item.sam_relevance_score !== null ? "SAM Relevance" : null;
 
-  const keyDate = item.proposal_due_at || item.estimated_award_date || item.posted_at;
-  const keyDateLabel = item.proposal_due_at ? "Due" : item.estimated_award_date ? "Est. Award" : "Posted";
-  const due = daysUntil(item.proposal_due_at);
+  const deadline = formatDeadline(item.proposal_due_at);
+  const daysLeft = daysUntil(item.proposal_due_at);
+  const isUrgent = !deadline?.expired && daysLeft !== null && daysLeft <= 14;
+  const fallbackDate = item.estimated_award_date || item.posted_at;
+  const fallbackLabel = item.estimated_award_date ? "Est. Award" : "Posted";
   const value = formatMoney(item.estimated_value_high ?? item.funding_amount);
 
   const detailFields = DETAIL_FIELDS.filter(({ key }) => !!item[key]);
@@ -150,18 +152,17 @@ export function IntelligenceCard({
         )}
       </div>
 
-      {keyDate && (
-        <div
-          className={cn(
-            "flex items-center gap-1.5 text-xs",
-            due !== null && due <= 14 && due >= 0 ? "font-semibold text-destructive" : "text-muted-foreground"
-          )}
-        >
+      {deadline ? (
+        <div className={cn("flex items-center gap-1.5 text-xs", isUrgent ? "font-semibold text-destructive" : "text-muted-foreground")}>
           <CalendarClock className="h-3.5 w-3.5" />
-          {keyDateLabel} {formatDate(keyDate)}
-          {due !== null && <span className="font-normal text-muted-foreground">({due < 0 ? "past due" : `${due}d left`})</span>}
+          {deadline.text}
         </div>
-      )}
+      ) : fallbackDate ? (
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <CalendarClock className="h-3.5 w-3.5" />
+          {fallbackLabel} {formatDate(fallbackDate)}
+        </div>
+      ) : null}
 
       {rationale?.why_relevant && (
         <div className="rounded-md bg-secondary/40 px-2.5 py-2 text-xs leading-relaxed text-foreground">

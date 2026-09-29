@@ -26,7 +26,7 @@ import { LoadingState, ErrorState, EmptyState } from "@/components/ui/states";
 import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABELS, RelevanceTierBadge } from "@/components/domain/badges";
 import { FilterChip } from "@/components/ui/filter-chip";
 import { IntelligenceCard } from "@/components/discover/intelligence-card";
-import { cn, daysUntil, titleCase } from "@/lib/utils";
+import { cn, daysUntil, formatDeadline, titleCase } from "@/lib/utils";
 import type { Agency, IntelligenceItem, IntelligenceCategory, IntelligenceSource, StatusBoardSync } from "@/types";
 
 const CATEGORIES: IntelligenceCategory[] = ["live_opportunity", "pre_solicitation", "early_signal", "award_intelligence"];
@@ -54,6 +54,27 @@ const GRANTS_RELEVANCE_TIER_OPTIONS = [
   { value: "possible_signal", label: "Grants: Possible Signal (50+)" },
   { value: "all", label: "Grants: All Records" },
 ];
+
+// Backend-driven (see date_status on GET /api/intelligence/items) — distinct from
+// DEADLINE_OPTIONS below, which is a client-side "how soon" narrowing filter, not an
+// expired/current status. "current" is the default: hides Live Opportunities /
+// Pre-Solicitations whose response deadline has passed; a record with no deadline at
+// all, or from a category with no deadline concept (Early Signal / Award
+// Intelligence), is never hidden by this.
+const DATE_STATUS_OPTIONS = [
+  { value: "current", label: "Available Now / Coming Soon" },
+  { value: "expired", label: "Expired" },
+  { value: "all", label: "All Dates" },
+];
+
+// Per-category wording for the same underlying date_status value, shown as a small
+// pill next to each section header so "current" reads as the term that actually
+// applies to that section (Fix 1/2/5) — only for the two categories a deadline means
+// anything for at all; Early Signal / Award Intelligence render no pill.
+const DATE_STATUS_SECTION_LABEL: Partial<Record<IntelligenceCategory, Record<string, string>>> = {
+  live_opportunity: { current: "Available Now", expired: "Expired", all: "All Dates" },
+  pre_solicitation: { current: "Coming Soon", expired: "Expired", all: "All Dates" },
+};
 
 const DEADLINE_OPTIONS = [
   { value: "any", label: "Any time" },
@@ -103,6 +124,9 @@ function DiscoverPageInner() {
   const [agencyId, setAgencyId] = useState("");
   const [state, setState] = useState("");
   const [deadline, setDeadline] = useState("any");
+  // Fresh-load default is "current" (Available Now / Coming Soon) — see
+  // DATE_STATUS_OPTIONS. Backend-driven, unlike the client-side `deadline` filter above.
+  const [dateStatus, setDateStatus] = useState("current");
   // Reads the exact sample-data visibility a Dashboard link was built with (absent on
   // a manual visit, defaulting to the same "include samples" behavior as elsewhere) —
   // never re-derived, so this page's count can't drift from the number that linked here.
@@ -125,10 +149,10 @@ function DiscoverPageInner() {
     () => ({
       q: q || undefined, category: category || undefined, source_id: sourceId || undefined,
       agency_id: agencyId || undefined, state: state || undefined, include_sample_data: !hideSampleData,
-      sam_relevance_tier: samRelevanceTier, grants_relevance_tier: grantsRelevanceTier,
+      date_status: dateStatus, sam_relevance_tier: samRelevanceTier, grants_relevance_tier: grantsRelevanceTier,
       sort_by: sortBy, sort_dir: sortDir, limit: 2000,
     }),
-    [q, category, sourceId, agencyId, state, hideSampleData, samRelevanceTier, grantsRelevanceTier, sortBy, sortDir]
+    [q, category, sourceId, agencyId, state, hideSampleData, dateStatus, samRelevanceTier, grantsRelevanceTier, sortBy, sortDir]
   );
 
   function load() {
@@ -246,6 +270,12 @@ function DiscoverPageInner() {
 
       <div className="flex flex-wrap items-center gap-2">
         <Input placeholder="Search title, agency, location…" value={q} onChange={(e) => setQ(e.target.value)} className="max-w-xs" />
+        <Select value={dateStatus} onValueChange={setDateStatus}>
+          <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {DATE_STATUS_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
         <Select value={sortBy} onValueChange={setSortBy}>
           <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -391,8 +421,13 @@ function DiscoverPageInner() {
                       })()}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">{item.source}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {formatDate(item.proposal_due_at || item.posted_at)}
+                    <TableCell
+                      className={cn(
+                        "text-xs",
+                        formatDeadline(item.proposal_due_at)?.expired ? "text-muted-foreground" : "text-foreground"
+                      )}
+                    >
+                      {formatDeadline(item.proposal_due_at)?.text ?? formatDate(item.proposal_due_at || item.posted_at)}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {formatMoney(item.estimated_value_high ?? item.funding_amount)}
@@ -467,6 +502,7 @@ function DiscoverPageInner() {
             if (categoryItems.length === 0) return null;
             const meta = CATEGORY_META[c];
             const Icon = meta.icon;
+            const dateStatusLabel = DATE_STATUS_SECTION_LABEL[c]?.[dateStatus];
             return (
               <div key={c}>
                 <div className="mb-2.5 flex items-baseline gap-2">
@@ -474,6 +510,11 @@ function DiscoverPageInner() {
                     <Icon className="h-4 w-4" /> {meta.label}
                     <span className="text-muted-foreground">({categoryItems.length})</span>
                   </h2>
+                  {dateStatusLabel && (
+                    <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-secondary-foreground">
+                      {dateStatusLabel}
+                    </span>
+                  )}
                   <span className="text-xs text-muted-foreground">— {meta.blurb}</span>
                 </div>
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">

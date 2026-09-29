@@ -390,3 +390,88 @@ def test_pursuit_score_is_populated_regardless_of_sort_by(client, db):
     response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})  # default sort
 
     assert response.json()[0]["pursuit_score"] == 77
+
+
+# --- date_status: Available Now / Coming Soon (default) vs Expired vs All Dates -----
+
+def test_date_status_default_hides_expired_live_opportunity(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Available now", proposal_due_at=NOW + timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    _item(db, source, external_id="B", title="Past due", proposal_due_at=NOW - timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})  # default date_status
+
+    assert [i["title"] for i in response.json()] == ["Available now"]
+
+
+def test_date_status_default_hides_expired_pre_solicitation(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Coming soon", proposal_due_at=NOW + timedelta(days=5),
+          intelligence_category=IntelligenceCategory.PRE_SOLICITATION)
+    _item(db, source, external_id="B", title="Stale pre-sol", proposal_due_at=NOW - timedelta(days=5),
+          intelligence_category=IntelligenceCategory.PRE_SOLICITATION)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    assert [i["title"] for i in response.json()] == ["Coming soon"]
+
+
+def test_date_status_default_never_hides_items_with_no_deadline_set(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="No deadline yet", proposal_due_at=None,
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    assert [i["title"] for i in response.json()] == ["No deadline yet"]
+
+
+def test_date_status_default_never_hides_early_signal_or_award_intelligence(client, db):
+    # A stale proposal_due_at on one of these means nothing -- Early Signal / Award
+    # Intelligence have no "still pursuable" question to begin with, so the default
+    # Available Now / Coming Soon filter must be a complete no-op for them.
+    source = _source(db)
+    _item(db, source, external_id="A", title="Old signal", proposal_due_at=NOW - timedelta(days=30),
+          intelligence_category=IntelligenceCategory.EARLY_SIGNAL)
+    _item(db, source, external_id="B", title="Old award", proposal_due_at=NOW - timedelta(days=30),
+          intelligence_category=IntelligenceCategory.AWARD_INTELLIGENCE)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    titles = {i["title"] for i in response.json()}
+    assert titles == {"Old signal", "Old award"}
+
+
+def test_date_status_expired_shows_only_what_the_default_hid(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Available now", proposal_due_at=NOW + timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    _item(db, source, external_id="B", title="Past due", proposal_due_at=NOW - timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    _item(db, source, external_id="C", title="Old award", proposal_due_at=NOW - timedelta(days=30),
+          intelligence_category=IntelligenceCategory.AWARD_INTELLIGENCE)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id), "date_status": "expired"})
+
+    assert [i["title"] for i in response.json()] == ["Past due"]
+
+
+def test_date_status_all_shows_everything_regardless_of_expiration(client, db):
+    source = _source(db)
+    _item(db, source, external_id="A", title="Available now", proposal_due_at=NOW + timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    _item(db, source, external_id="B", title="Past due", proposal_due_at=NOW - timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id), "date_status": "all"})
+
+    titles = {i["title"] for i in response.json()}
+    assert titles == {"Available now", "Past due"}

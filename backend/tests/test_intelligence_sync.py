@@ -170,6 +170,37 @@ def test_one_bad_item_is_skipped_without_failing_the_rest(db, fake_connector):
     assert db.query(IntelligenceItem).filter_by(external_id="BAD-1").count() == 0
 
 
+def test_item_errors_are_captured_in_diagnostics_for_source_history(db, fake_connector):
+    # Previously a per-item failure was only logger.exception'd -- invisible outside
+    # the application log. Source History needs the exact external_id and error for
+    # each of the (here, two) failing records, not just the bare items_errored count.
+    source = _source(db)
+    fake_connector.items = [
+        _raw_item("GOOD-1"),
+        _raw_item("BAD-1", this_is_not_a_real_column="boom"),
+        _raw_item("BAD-2", this_is_also_not_a_real_column="bang"),
+    ]
+
+    run = run_sync(db, source, SyncTriggeredBy.MANUAL)
+
+    assert run.items_errored == 2
+    assert run.diagnostics is not None
+    item_errors = run.diagnostics["item_errors"]
+    assert len(item_errors) == 2
+    assert {e["external_id"] for e in item_errors} == {"BAD-1", "BAD-2"}
+    assert all(e["error"] for e in item_errors)  # a real, non-empty message, not just logged and dropped
+    assert "GOOD-1" not in {e["external_id"] for e in item_errors}
+
+
+def test_item_errors_absent_when_no_item_fails(db, fake_connector):
+    fake_connector.items = [_raw_item("GOOD-1")]
+
+    run = run_sync(db, _source(db), SyncTriggeredBy.MANUAL)
+
+    assert run.items_errored == 0
+    assert run.diagnostics is None  # FakeConnector reports no diagnostics of its own either
+
+
 def test_concurrency_guard_blocks_overlapping_sync(db, fake_connector):
     source = _source(db)
     db.add(IntelligenceSyncRun(

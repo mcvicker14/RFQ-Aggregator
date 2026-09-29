@@ -73,13 +73,36 @@ const DIAGNOSTIC_FIELD_LABEL: Record<string, string> = {
 function SyncDiagnostics({ diagnostics }: { diagnostics: Record<string, unknown> }) {
   const retrieval = diagnostics.retrieval as Record<string, unknown> | undefined;
   const probes = diagnostics.probes as Record<string, { status_code: number | null; total_records: number | null; error?: string }> | undefined;
+  // Every connector, not just SAM.gov, can report this — a per-item failure during
+  // upsert/scoring/promotion that would otherwise only reach the application log. See
+  // app/services/intelligence_sync.py's run_sync(). Rendered as its own clearly
+  // labeled list — never folded into the generic JSON fallback or left as just a
+  // number in the Errored count above.
+  const itemErrors = diagnostics.item_errors as { external_id: string; title?: string | null; error: string }[] | undefined;
 
-  if (!retrieval && !probes) {
+  if (!retrieval && !probes && !itemErrors?.length) {
     return <pre className="whitespace-pre-wrap break-words text-xs">{JSON.stringify(diagnostics, null, 2)}</pre>;
   }
 
   return (
     <div className="flex flex-col gap-2">
+      {itemErrors && itemErrors.length > 0 && (
+        <div>
+          <div className="font-medium text-destructive">
+            Record processing errors ({itemErrors.length})
+          </div>
+          <ul className="mt-0.5 flex flex-col gap-1">
+            {itemErrors.map((e, idx) => (
+              <li key={`${e.external_id}-${idx}`} className="rounded bg-destructive/10 p-1.5">
+                <div className="font-medium text-foreground">
+                  {e.title || "(untitled)"} <span className="font-normal text-muted-foreground">— {e.external_id}</span>
+                </div>
+                <div className="break-words text-destructive">{e.error}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {retrieval && (
         <div>
           <div className="font-medium text-foreground">Retrieval query</div>

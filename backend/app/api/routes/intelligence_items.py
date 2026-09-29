@@ -1,7 +1,8 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
@@ -34,6 +35,14 @@ _latest_pursuit_score = (
     .order_by(OpportunityScore.opportunity_id, OpportunityScore.computed_at.desc())
     .subquery()
 )
+
+# A response deadline only means "pursuable / not pursuable" for these two categories
+# — mirrors sam_gov.py's _is_expired_opportunity() exactly (an Award Notice or Early
+# Signal isn't "expired" just because it happens to carry an old proposal_due_at; most
+# don't populate that field at all). Kept as its own tuple here, not imported from the
+# connector, since this route must stay correct for every source, not just SAM.gov —
+# but if you change one, check whether the other should change too.
+_EXPIRATION_ELIGIBLE_CATEGORIES = (IntelligenceCategory.LIVE_OPPORTUNITY, IntelligenceCategory.PRE_SOLICITATION)
 
 _SORT_COLUMNS = {
     "first_detected_at": IntelligenceItem.first_detected_at,
@@ -83,6 +92,20 @@ def list_intelligence_items(
     set_aside: SetAsideType | None = None,
     include_sample_data: bool = True,
     unpromoted_only: bool = Query(False, description="Only items not yet linked to an Opportunity"),
+    date_status: str = Query(
+        "current",
+        pattern="^(current|expired|all)$",
+        description=(
+            "Default Discover view is 'current' — hides Live Opportunities / "
+            "Pre-Solicitations whose response deadline (proposal_due_at) has already "
+            "passed (Discover shows these as 'Available Now' / 'Coming Soon' "
+            "respectively); a record with no deadline set is never hidden by this. "
+            "Early Signal / Award Intelligence items have no such deadline concept "
+            "and are never affected by this filter. 'expired' shows only the "
+            "records this default hides; 'all' removes the filter entirely, "
+            "including for sources other than SAM.gov."
+        ),
+    ),
     sam_relevance_tier: str = Query(
         "relevant",
         pattern="^(highly_relevant|relevant|possible_match|all)$",
@@ -150,6 +173,14 @@ def list_intelligence_items(
         stmt = stmt.where(IntelligenceItem.is_sample_data.is_(False))
     if unpromoted_only:
         stmt = stmt.where(IntelligenceItem.opportunity_id.is_(None))
+
+    if date_status != "all":
+        is_expired = and_(
+            IntelligenceItem.intelligence_category.in_(_EXPIRATION_ELIGIBLE_CATEGORIES),
+            IntelligenceItem.proposal_due_at.isnot(None),
+            IntelligenceItem.proposal_due_at < datetime.now(timezone.utc),
+        )
+        stmt = stmt.where(is_expired if date_status == "expired" else ~is_expired)
 
     sam_floor = _SAM_RELEVANCE_TIER_FLOOR[sam_relevance_tier]
     if sam_floor is not None:

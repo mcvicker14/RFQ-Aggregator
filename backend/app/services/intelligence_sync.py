@@ -328,6 +328,7 @@ def run_sync(
         return run
 
     fetched = created = updated = errored = 0
+    item_errors: list[dict] = []
     for raw in raw_items:
         fetched += 1
         try:
@@ -340,20 +341,30 @@ def run_sync(
             db.commit()
             created += was_created
             updated += not was_created
-        except Exception:
+        except Exception as exc:
             db.rollback()
             logger.exception(
                 "Failed to process one item (external_id=%r) from '%s' — skipped, sync continues",
                 getattr(raw, "external_id", "<unknown>"), source.name,
             )
             errored += 1
+            # Previously only reached the application log — invisible from Source
+            # History, so a partial-failure run gave no way to tell *which* records
+            # failed or *why* without shelling into logs. Kept short (no traceback)
+            # since this is read from a UI panel, not a log aggregator; the full
+            # traceback is still in the application log for a deeper dive.
+            item_errors.append({
+                "external_id": str(getattr(raw, "external_id", "<unknown>")),
+                "title": getattr(raw, "fields", {}).get("title"),
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+            })
 
     run.items_fetched = fetched
     run.items_created = created
     run.items_updated = updated
     run.items_unchanged = max(0, fetched - created - updated - errored)
     run.items_errored = errored
-    run.diagnostics = run_diagnostics
+    run.diagnostics = {**(run_diagnostics or {}), "item_errors": item_errors} if item_errors else run_diagnostics
     if errored == 0:
         run.status = SyncRunStatus.SUCCESS
     elif created or updated:

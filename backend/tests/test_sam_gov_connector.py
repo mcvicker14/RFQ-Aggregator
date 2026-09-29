@@ -288,6 +288,18 @@ def test_run_diagnostic_probes_uses_a_full_year_window_regardless_of_since(monke
         assert (posted_to - posted_from).days == sam_gov_module.DIAGNOSTIC_PROBE_WINDOW_DAYS
 
 
+def test_diagnostic_probe_window_matches_fetchs_own_proven_window_size():
+    # Pins the fix for the production incident where Source History's diagnostic
+    # probes returned HTTP 400 date-range errors: the probe window (365) didn't match
+    # fetch()'s own windowing (364), which has been working in production. This
+    # asserts the two can never silently drift apart again, not just that the probe
+    # window is internally self-consistent (see the test above, which would pass at
+    # any value). 364 is not itself re-confirmed live here — api.sam.gov is outside
+    # this sandbox's egress allowlist (see this module's docstring) — see
+    # DIAGNOSTIC_PROBE_WINDOW_DAYS's own comment for the full reasoning.
+    assert sam_gov_module.DIAGNOSTIC_PROBE_WINDOW_DAYS == 364
+
+
 def test_fetch_attaches_last_run_diagnostics_with_the_documented_shape(monkeypatch):
     monkeypatch.setattr(sam_gov_module, "request_with_retry", lambda *a, **kw: _fake_response({"opportunitiesData": [], "totalRecords": 0}))
     monkeypatch.setattr(sam_gov_module.settings, "SAM_GOV_API_KEY", "test-key")

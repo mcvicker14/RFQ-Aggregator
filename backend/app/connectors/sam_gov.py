@@ -105,10 +105,22 @@ DEFAULT_NAICS_FILTER = [
 # query keys), confirmed directly against httpx's own request-building in this sandbox.
 NOTICE_TYPE_CODES = ["o", "p", "k", "r", "s", "a"]
 
-# Diagnostic probes always use a full-year window regardless of the real sync's own
+# Diagnostic probes always use a full, maximal window regardless of the real sync's own
 # (possibly much narrower) since — a narrow probe window could itself explain a zero
-# and produce a misleading diagnosis. The API's documented max span is exactly 365 days.
-DIAGNOSTIC_PROBE_WINDOW_DAYS = 365
+# and produce a misleading diagnosis. Set to 364, matching fetch()'s own windowing
+# above (`cursor + timedelta(days=364)`) exactly, not the 365 the API's docs describe
+# as the max span: that mismatch is what was producing this probe's own HTTP 400s in
+# production (round-3 incident) — fetch()'s windowing already avoids exactly 365 days
+# and has been working in production throughout, so this now matches the one value
+# already proven live rather than the docs' stated limit, which is plausibly off by
+# one against the server's actual (likely fencepost/inclusive-counting) validation.
+# Not re-confirmed with a fresh live call for this fix — api.sam.gov is outside this
+# sandbox's egress allowlist (org policy denial, not a transient failure — see
+# /root/.ccr/README.md) — so this is the strongest evidence available rather than a
+# fresh assumption: if Source History still shows a probe 400 after this ships, that
+# means even 364 is wrong and the real boundary needs to be re-derived from what SAM.gov
+# actually reports then, not guessed again.
+DIAGNOSTIC_PROBE_WINDOW_DAYS = 364
 
 # Best-known mapping of SAM.gov's typeOfSetAsideDescription free text to our enum.
 # Matched by substring, case-insensitive, most-specific first.

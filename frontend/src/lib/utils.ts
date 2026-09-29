@@ -29,6 +29,15 @@ export function formatDate(value: string | null | undefined): string {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(d);
 }
 
+// No year (e.g. "Oct 5") -- for compact deadline display where the year is implied by
+// context (see components/discover/intelligence-card.tsx's "Due Oct 5 · 6 days").
+export function formatShortDate(value: string | null | undefined): string {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(d);
+}
+
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "—";
   const d = new Date(value);
@@ -48,6 +57,18 @@ export function daysUntil(value: string | null | undefined): number | null {
   if (Number.isNaN(d.getTime())) return null;
   const diffMs = d.getTime() - Date.now();
   return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+}
+
+// Shared by IntelligenceCard and Discover's table view so "Due Oct 5 · 6 days" /
+// "Expired Sep 12" reads identically in both places. Returns null when there's no
+// deadline at all — callers fall back to their own next-best date (est. award/posted).
+export function formatDeadline(value: string | null | undefined): { text: string; expired: boolean } | null {
+  if (!value) return null;
+  const due = daysUntil(value);
+  if (due === null) return null;
+  if (due < 0) return { text: `Expired ${formatShortDate(value)}`, expired: true };
+  const dayLabel = due === 0 ? "today" : due === 1 ? "1 day" : `${due} days`;
+  return { text: `Due ${formatShortDate(value)} · ${dayLabel}`, expired: false };
 }
 
 export function titleCase(value: string | null | undefined): string {
