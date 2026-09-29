@@ -23,6 +23,7 @@ import type {
   OpportunityScore,
   PipelineStage,
   RevenueForecast,
+  StatusBoardSync,
   SyncAllResult,
   Task,
   User,
@@ -89,6 +90,10 @@ export const opportunitiesApi = {
   getScore: (id: string) => api.get<OpportunityScore>(`/api/opportunities/${id}/score`),
   recalculateScore: (id: string) => api.post<OpportunityScore>(`/api/opportunities/${id}/score/recalculate`),
   activities: (id: string) => api.get(`/api/opportunities/${id}/activities`),
+  // Idempotent — safe to call again on an already-synced opportunity (no-op) or after
+  // a prior failure (retries). See backend/app/services/status_board_sync.py.
+  syncStatusBoard: (id: string, notes?: string) =>
+    api.post<StatusBoardSync>(`/api/opportunities/${id}/status-board-sync`, { notes }),
 };
 
 // --- Go/No-Go ---------------------------------------------------------------------

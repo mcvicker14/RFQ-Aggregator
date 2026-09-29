@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_MODEL: str = "claude-sonnet-5"
 
+    # SOQ Status Board (Google Sheets) sync — see app/services/status_board_sync.py.
+    # GOOGLE_SERVICE_ACCOUNT_JSON is the full contents of a service account's JSON key
+    # file (never a real value in source control; set only via Render's environment
+    # variables). The spreadsheet ID is not a secret (it's visible in the sheet's own
+    # URL) — defaulted to the actual SOQ Status Board so this degrades to "just needs
+    # the credential" rather than also needing the ID re-entered.
+    GOOGLE_SERVICE_ACCOUNT_JSON: str | None = None
+    SOQ_STATUS_BOARD_SPREADSHEET_ID: str = "12KpUjFjx4AnoJt1KOlj9qFuQXZaTFGrVX-c3ExJ55GE"
+
     # Object storage (Phase 2 — local disk is the default StorageBackend today)
     STORAGE_BACKEND: str = "local"  # "local" | "s3" | "azure_blob"
     S3_BUCKET: str | None = None

@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SampleDataBadge, RelevanceTierBadge, IntelligenceCategoryBadge } from "@/components/domain/badges";
 import { cn, formatDate, daysUntil } from "@/lib/utils";
-import type { IntelligenceItem } from "@/types";
+import type { IntelligenceItem, StatusBoardSync } from "@/types";
 
 // Mirrors backend/app/services/intelligence_sync.py's PROMOTABLE_CATEGORIES exactly —
 // only a Live Opportunity or Pre-Solicitation is ever a real pursuit to track; Early
@@ -48,13 +48,22 @@ function formatMoney(value: number | null): string | null {
 export function IntelligenceCard({
   item,
   onTrack,
+  onRetrySync,
+  statusBoardSync,
 }: {
   item: IntelligenceItem;
   onTrack: (item: IntelligenceItem) => Promise<void>;
+  // Session-local: known only for items tracked (or retried) during this Discover
+  // visit — the database is always the source of truth regardless, this is purely a
+  // "what just happened when I clicked" display. An item tracked in an earlier
+  // session simply shows the plain Tracked state below, with no stale claim either way.
+  onRetrySync?: (item: IntelligenceItem) => Promise<void>;
+  statusBoardSync?: Pick<StatusBoardSync, "status" | "last_error"> | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [tracking, setTracking] = useState(false);
   const [trackError, setTrackError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   const tracked = !!item.opportunity_id;
   const canTrack = !tracked && PROMOTABLE_CATEGORIES.has(item.intelligence_category);
@@ -83,6 +92,16 @@ export function IntelligenceCard({
       setTrackError(e instanceof Error ? e.message : "Failed to track — try again");
     } finally {
       setTracking(false);
+    }
+  }
+
+  async function handleRetrySync() {
+    if (!onRetrySync) return;
+    setRetrying(true);
+    try {
+      await onRetrySync(item);
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -194,15 +213,26 @@ export function IntelligenceCard({
 
       <div className="mt-auto flex items-center justify-between gap-2 pt-1.5">
         {tracked ? (
-          <Link
-            href={`/opportunities/${item.opportunity_id}`}
-            className="inline-flex items-center gap-1 rounded-md bg-success/10 px-2.5 py-1.5 text-xs font-semibold text-success transition-colors hover:bg-success/15"
-          >
-            ✓ Tracked — view in Pipeline
-          </Link>
+          statusBoardSync?.status === "failed" ? (
+            <div className="flex items-center gap-1.5">
+              <span className="inline-flex items-center gap-1 rounded-md bg-warning/10 px-2.5 py-1.5 text-xs font-semibold text-warning">
+                ⚠ Tracked — Status Board sync failed
+              </span>
+              <Button size="sm" variant="outline" onClick={handleRetrySync} disabled={retrying}>
+                {retrying ? "Retrying…" : "Retry"}
+              </Button>
+            </div>
+          ) : (
+            <Link
+              href={`/opportunities/${item.opportunity_id}`}
+              className="inline-flex items-center gap-1 rounded-md bg-success/10 px-2.5 py-1.5 text-xs font-semibold text-success transition-colors hover:bg-success/15"
+            >
+              ✓ Tracked{statusBoardSync?.status === "synced" ? " — on Status Board" : " — view in Pipeline"}
+            </Link>
+          )
         ) : canTrack ? (
           <Button size="sm" onClick={handleTrack} disabled={tracking}>
-            {tracking ? "Tracking…" : "Track Opportunity"}
+            {tracking ? "Tracking…" : "Track + Add to Status Board"}
           </Button>
         ) : (
           <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
@@ -221,6 +251,9 @@ export function IntelligenceCard({
         )}
       </div>
       {trackError && <p className="text-xs text-destructive">{trackError}</p>}
+      {statusBoardSync?.status === "failed" && statusBoardSync.last_error && (
+        <p className="text-xs text-warning">{statusBoardSync.last_error}</p>
+      )}
     </Card>
   );
 }

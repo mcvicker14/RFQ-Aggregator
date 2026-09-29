@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from app.models.enums import ContractType, MaturityStage, OpportunityStatus, SetAsideType
+from app.models.enums import ContractType, MaturityStage, OpportunityStatus, SetAsideType, StatusBoardSyncStatus
 from app.schemas.agency import AgencyRead
 from app.schemas.common import ORMModel
 from app.schemas.validators import AwareDatetime
@@ -124,3 +124,21 @@ class OpportunityRead(OpportunityBase, ORMModel):
 class StageChangeRequest(BaseModel):
     pipeline_stage_id: UUID
     note: str | None = None
+
+
+class StatusBoardSyncRequest(BaseModel):
+    # Free-text carried over from Discover's own rationale for this item (e.g. the
+    # relevance score's "why it fits" text) — never invented if the caller has nothing
+    # to say; see app/services/status_board_sync.py's Notes column mapping.
+    notes: str | None = None
+
+
+class StatusBoardSyncRead(ORMModel):
+    id: UUID
+    opportunity_id: UUID
+    status: StatusBoardSyncStatus
+    sheet_row_number: int | None
+    attempt_count: int
+    last_error: str | None
+    last_attempted_at: datetime | None
+    synced_at: datetime | None

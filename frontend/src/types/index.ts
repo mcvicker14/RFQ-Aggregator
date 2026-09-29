@@ -195,6 +195,17 @@ export interface OpportunityContactLink {
   role_on_opportunity: ContactRole;
 }
 
+export interface StatusBoardSync {
+  id: string;
+  opportunity_id: string;
+  status: "pending" | "synced" | "failed";
+  sheet_row_number: number | null;
+  attempt_count: number;
+  last_error: string | null;
+  last_attempted_at: string | null;
+  synced_at: string | null;
+}
+
 export interface OpportunityListItem {
   id: string;
   title: string;

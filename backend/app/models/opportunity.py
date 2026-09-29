@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Numeric, String, Text
+from sqlalchemy import Boolean, DateTime, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, ProvenanceMixin, TimestampMixin, UUIDPKMixin, fk_uuid, pg_enum
-from app.models.enums import ContractType, MaturityStage, OpportunityStatus, SetAsideType
+from app.models.enums import ContractType, MaturityStage, OpportunityStatus, SetAsideType, StatusBoardSyncStatus
 
 
 class Opportunity(UUIDPKMixin, TimestampMixin, ProvenanceMixin, Base):
@@ -87,3 +87,28 @@ class OpportunitySource(UUIDPKMixin, TimestampMixin, Base):
     confidence: Mapped[str] = mapped_column(String(30), default="verified_fact")
     raw_snapshot: Mapped[dict | None] = mapped_column(JSONB, default=None)  # raw payload for audit/debug
     notes: Mapped[str | None] = mapped_column(Text, default=None)
+
+
+class StatusBoardSync(UUIDPKMixin, TimestampMixin, Base):
+    """Tracks one Opportunity's sync state against the New RFQs section of the SOQ
+    Status Board Google Sheet — see app/services/status_board_sync.py for the actual
+    write mechanism. The unique constraint on opportunity_id is the app-side half of
+    duplicate protection: at most one sync record can ever exist per Opportunity, so a
+    repeated "Track + Add to Status Board" click (or a retry) always finds this row
+    first and never attempts a second independent write for the same Opportunity.
+    """
+
+    __tablename__ = "status_board_syncs"
+    __table_args__ = (UniqueConstraint("opportunity_id"),)
+
+    opportunity_id: Mapped[uuid.UUID] = fk_uuid("opportunities.id", ondelete="CASCADE")
+    status: Mapped[StatusBoardSyncStatus] = mapped_column(
+        pg_enum(StatusBoardSyncStatus), default=StatusBoardSyncStatus.PENDING, nullable=False, index=True
+    )
+    sheet_row_number: Mapped[int | None] = mapped_column(default=None)  # 1-indexed row in Sheet1, once known
+    attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, default=None)
+    last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    opportunity: Mapped["Opportunity"] = relationship()

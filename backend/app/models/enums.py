@@ -223,3 +223,14 @@ class SyncRunStatus(str, enum.Enum):
 class SyncTriggeredBy(str, enum.Enum):
     MANUAL = "manual"
     SCHEDULED = "scheduled"
+
+
+class StatusBoardSyncStatus(str, enum.Enum):
+    """State of one Opportunity's row in the SOQ Status Board Google Sheet — see
+    app/services/status_board_sync.py. PENDING covers both "never attempted" and
+    "attempted, not yet confirmed" so a crash mid-write and a fresh record look the
+    same: both are safe to (re)attempt, never treated as already synced."""
+
+    PENDING = "pending"
+    SYNCED = "synced"
+    FAILED = "failed"

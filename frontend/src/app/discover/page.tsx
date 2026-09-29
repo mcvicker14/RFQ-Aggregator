@@ -27,7 +27,7 @@ import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABEL
 import { FilterChip } from "@/components/ui/filter-chip";
 import { IntelligenceCard } from "@/components/discover/intelligence-card";
 import { cn, daysUntil, titleCase } from "@/lib/utils";
-import type { Agency, IntelligenceItem, IntelligenceCategory, IntelligenceSource } from "@/types";
+import type { Agency, IntelligenceItem, IntelligenceCategory, IntelligenceSource, StatusBoardSync } from "@/types";
 
 const CATEGORIES: IntelligenceCategory[] = ["live_opportunity", "pre_solicitation", "early_signal", "award_intelligence"];
 
@@ -90,6 +90,10 @@ function DiscoverPageInner() {
   const [error, setError] = useState<string | null>(null);
   const [sources, setSources] = useState<IntelligenceSource[]>([]);
   const [agencies, setAgencies] = useState<Agency[]>([]);
+  // Session-local Status Board sync state, keyed by IntelligenceItem id — populated
+  // the moment this Discover visit tracks (or retries) an item; see IntelligenceCard's
+  // own comment on why this is deliberately not persisted/reloaded from the server.
+  const [syncStates, setSyncStates] = useState<Record<string, Pick<StatusBoardSync, "status" | "last_error">>>({});
 
   const [q, setQ] = useState("");
   const [category, setCategory] = useState(searchParams.get("category") ?? "");
@@ -164,7 +168,33 @@ function DiscoverPageInner() {
     if (item.estimated_value_high) payload.estimated_value_high = item.estimated_value_high;
 
     const created = await opportunitiesApi.create(payload);
+    // The Opportunity now exists regardless of what happens next — a Status Board
+    // sync failure below must never make this card look untracked or risk a second
+    // "Track" click creating a duplicate Opportunity (see IntelligenceCard: `tracked`
+    // is driven by opportunity_id alone, independent of sync status).
     setItems((prev) => prev?.map((i) => (i.id === item.id ? { ...i, opportunity_id: created.id } : i)) ?? prev);
+
+    const notes = item.grants_relevance_rationale?.why_relevant ?? item.sam_relevance_rationale?.why_relevant;
+    await attemptStatusBoardSync(item.id, created.id, notes);
+  }
+
+  async function attemptStatusBoardSync(itemId: string, opportunityId: string, notes?: string) {
+    setSyncStates((prev) => ({ ...prev, [itemId]: { status: "pending", last_error: null } }));
+    try {
+      const result = await opportunitiesApi.syncStatusBoard(opportunityId, notes);
+      setSyncStates((prev) => ({ ...prev, [itemId]: { status: result.status, last_error: result.last_error } }));
+    } catch (e) {
+      setSyncStates((prev) => ({
+        ...prev,
+        [itemId]: { status: "failed", last_error: e instanceof Error ? e.message : "Status Board sync failed" },
+      }));
+    }
+  }
+
+  async function handleRetrySync(item: IntelligenceItem) {
+    if (!item.opportunity_id) return;
+    const notes = item.grants_relevance_rationale?.why_relevant ?? item.sam_relevance_rationale?.why_relevant;
+    await attemptStatusBoardSync(item.id, item.opportunity_id, notes);
   }
 
   if (error) return <ErrorState message={error} onRetry={load} />;
@@ -448,7 +478,13 @@ function DiscoverPageInner() {
                 </div>
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {categoryItems.map((item) => (
-                    <IntelligenceCard key={item.id} item={item} onTrack={handleTrack} />
+                    <IntelligenceCard
+                      key={item.id}
+                      item={item}
+                      onTrack={handleTrack}
+                      onRetrySync={handleRetrySync}
+                      statusBoardSync={syncStates[item.id]}
+                    />
                   ))}
                 </div>
               </div>

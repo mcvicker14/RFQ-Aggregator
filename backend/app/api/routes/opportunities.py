@@ -21,12 +21,15 @@ from app.schemas.opportunity import (
     OpportunityRead,
     OpportunityUpdate,
     StageChangeRequest,
+    StatusBoardSyncRead,
+    StatusBoardSyncRequest,
 )
 from app.schemas.scoring import OpportunityScoreRead
 from app.services import opportunities as opportunities_service
 from app.services.activities import log_activity
 from app.services.dashboard_filters import KPI_FILTER_NAMES, apply_kpi_filter
 from app.services.scoring import calculate_score
+from app.services.status_board_sync import sync_opportunity_to_status_board
 
 router = APIRouter(prefix="/api/opportunities", tags=["opportunities"])
 
@@ -206,6 +209,22 @@ def archive_opportunity(
     opp.status = OpportunityStatus.ARCHIVED
     log_activity(db, opp.id, ActivityType.FIELD_UPDATED, f"Archived by {current_user.full_name}", actor_id=current_user.id)
     db.commit()
+
+
+@router.post("/{opportunity_id}/status-board-sync", response_model=StatusBoardSyncRead)
+def sync_status_board(
+    opportunity_id: UUID,
+    payload: StatusBoardSyncRequest = StatusBoardSyncRequest(),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_bd_or_above),
+):
+    """Idempotent: safe to call for an opportunity that's already synced (returns the
+    existing SYNCED record with no Sheets API call), and safe to call again after a
+    failure (retries — never creates a duplicate Opportunity, and the sync service's
+    own duplicate protection means it never creates a duplicate Status Board row
+    either). See app/services/status_board_sync.py."""
+    opp = _get_or_404(db, opportunity_id)
+    return sync_opportunity_to_status_board(db, opp, notes=payload.notes)
 
 
 @router.post("/{opportunity_id}/stage", response_model=OpportunityRead)
