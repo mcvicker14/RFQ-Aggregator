@@ -105,7 +105,7 @@ class StatusBoardSync(UUIDPKMixin, TimestampMixin, Base):
     status: Mapped[StatusBoardSyncStatus] = mapped_column(
         pg_enum(StatusBoardSyncStatus), default=StatusBoardSyncStatus.PENDING, nullable=False, index=True
     )
-    sheet_row_number: Mapped[int | None] = mapped_column(default=None)  # 1-indexed row in Sheet1, once known
+    sheet_row_number: Mapped[int | None] = mapped_column(default=None)  # 1-indexed row in the Active tab, once known
     attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
     last_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)

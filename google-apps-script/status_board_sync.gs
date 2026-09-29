@@ -22,7 +22,9 @@
  *
  * VERIFIED SHEET STRUCTURE this script assumes (matches backend/app/services/
  * status_board_sync.py's own assumptions about the same sheet):
- *   - tab "Sheet1"
+ *   - tab "Active" (STATUS_BOARD_SHEET_NAME below) — the workbook's other tab,
+ *     "2026 Archive", is a separate sheet this script never opens, reads, or writes;
+ *     getSheetByName(STATUS_BOARD_SHEET_NAME) can only ever resolve to "Active"
  *   - "New RFQs" header text in column A of row 36
  *   - existing New RFQs data rows immediately below that
  *   - exactly one blank row marking the end of New RFQs
@@ -36,7 +38,12 @@
  * this script again; it will never silently guess a new insertion point.
  */
 
-var SHEET_TAB_NAME = "Sheet1";
+// The exact tab to write to — explicit, not the default-sheet fallback, so a rename
+// or an extra tab (this workbook also has a separate "2026 Archive" tab) can never
+// silently redirect a write. Production incident: this was "Sheet1" (a guess at the
+// default name) and didn't match the real tab, failing every sync with
+// structure_error: Tab 'Sheet1' was not found.
+var STATUS_BOARD_SHEET_NAME = "Active";
 var NEW_RFQS_HEADER_ROW = 36;
 var NEW_RFQS_HEADER_TEXT = "New RFQs";
 var SEARCH_WINDOW_ROWS = 120;
@@ -114,9 +121,9 @@ function syncRow(fields) {
     return value === null || value === undefined ? "" : String(value);
   });
 
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_TAB_NAME);
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STATUS_BOARD_SHEET_NAME);
   if (!sheet) {
-    return { ok: false, error: "structure_error", message: "Tab '" + SHEET_TAB_NAME + "' was not found in this spreadsheet." };
+    return { ok: false, error: "structure_error", message: "Tab '" + STATUS_BOARD_SHEET_NAME + "' was not found in this spreadsheet." };
   }
 
   var maxRows = sheet.getMaxRows();
