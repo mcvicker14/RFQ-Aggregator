@@ -55,7 +55,8 @@ def test_admin_gets_exactly_the_expected_shape_and_nothing_else(admin_client):
     body = response.json()
 
     assert set(body.keys()) == {
-        "counts", "safe_agencies", "blocked_agencies", "safe_companies", "blocked_companies", "orphan_task_count",
+        "counts", "safe_agencies", "blocked_agencies", "safe_companies", "blocked_companies",
+        "orphan_task_count", "orphan_tasks",
     }
     # No settings/config/secret values of any kind should ever appear in this response.
     dumped = response.text
@@ -102,3 +103,19 @@ def test_orphan_task_count_is_reported(admin_client, db):
 
     body = admin_client.get("/api/admin/sample-data-audit").json()
     assert body["orphan_task_count"] >= 1
+
+
+def test_orphan_task_details_are_reported_for_manual_review(admin_client, db):
+    orphan = Task(title="Review USACE Mobile District procurement forecast for Q1")
+    db.add(orphan)
+    db.flush()
+
+    body = admin_client.get("/api/admin/sample-data-audit").json()
+
+    rows = {row["id"]: row for row in body["orphan_tasks"]}
+    assert str(orphan.id) in rows
+    row = rows[str(orphan.id)]
+    assert row["title"] == "Review USACE Mobile District procurement forecast for Q1"
+    assert row["status"] and row["priority"]  # non-sensitive fields present
+    assert "notes" not in row and "owner_id" not in row and "created_by_id" not in row
+    assert len(body["orphan_tasks"]) == body["orphan_task_count"]

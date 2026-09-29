@@ -20,8 +20,8 @@ from sqlalchemy.orm import Session
 from app.core.deps import require_admin
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.sample_data_audit import SampleDataAuditResponse, SampleDataAuditRow
-from seed.audit_sample_data import audit_agencies, audit_companies, orphan_task_count, table_counts
+from app.schemas.sample_data_audit import OrphanTaskRow, SampleDataAuditResponse, SampleDataAuditRow
+from seed.audit_sample_data import audit_agencies, audit_companies, orphan_tasks, table_counts
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -33,15 +33,27 @@ def _rows(entries) -> list[SampleDataAuditRow]:
     ]
 
 
+def _orphan_task_rows(tasks) -> list[OrphanTaskRow]:
+    return [
+        OrphanTaskRow(
+            id=str(t.id), title=t.title, status=t.status.value, priority=t.priority.value,
+            due_date=t.due_date, created_at=t.created_at,
+        )
+        for t in tasks
+    ]
+
+
 @router.get("/sample-data-audit", response_model=SampleDataAuditResponse)
 def get_sample_data_audit(db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
     safe_agencies, blocked_agencies = audit_agencies(db)
     safe_companies, blocked_companies = audit_companies(db)
+    orphans = _orphan_task_rows(orphan_tasks(db))
     return SampleDataAuditResponse(
         counts=table_counts(db),
         safe_agencies=_rows(safe_agencies),
         blocked_agencies=_rows(blocked_agencies),
         safe_companies=_rows(safe_companies),
         blocked_companies=_rows(blocked_companies),
-        orphan_task_count=orphan_task_count(db),
+        orphan_task_count=len(orphans),
+        orphan_tasks=orphans,
     )

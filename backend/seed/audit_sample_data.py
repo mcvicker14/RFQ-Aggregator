@@ -160,6 +160,13 @@ def orphan_task_count(db: Session) -> int:
     return db.execute(select(func.count()).select_from(Task).where(Task.opportunity_id.is_(None))).scalar_one()
 
 
+def orphan_tasks(db: Session) -> list[Task]:
+    """The actual rows behind orphan_task_count. Never auto-deleted or otherwise acted
+    on by this module or cleanup_sample_data.py -- returned only so a human can review
+    each one's provenance by hand (see module docstring)."""
+    return list(db.execute(select(Task).where(Task.opportunity_id.is_(None))).scalars().all())
+
+
 def run_audit(db: Session) -> None:
     print("=" * 78)
     print("SAMPLE DATA AUDIT — read-only, nothing is written or deleted")
@@ -197,11 +204,14 @@ def run_audit(db: Session) -> None:
         nonzero = {k: v for k, v in hard.items() if v}
         print(f"    - {company.name}: {nonzero}")
 
-    orphans = orphan_task_count(db)
-    print(f"\n-- Tasks with no opportunity_id: {orphans} --")
+    orphans = orphan_tasks(db)
+    print(f"\n-- Tasks with no opportunity_id: {len(orphans)} --")
     print("  Task has no is_sample_data column and these have no parent to inherit")
-    print("  sample-status from — NOT included in any deletion count. If any exist,")
-    print("  review them by hand; this script will never guess based on title text.")
+    print("  sample-status from — NOT included in any deletion count. This script will")
+    print("  never guess based on title text; review each one by hand:")
+    for task in orphans:
+        print(f"    - [{task.id}] \"{task.title}\" (status={task.status.value}, "
+              f"priority={task.priority.value}, due={task.due_date}, created={task.created_at})")
 
     print("\n" + "=" * 78)
     print("SUMMARY — what a cleanup run would remove:")
@@ -215,7 +225,7 @@ def run_audit(db: Session) -> None:
         print(f"  {len(blocked_agencies)} agencies and {len(blocked_companies)} companies are flagged sample")
         print(f"    but will be PRESERVED because real data still depends on them.")
     if orphans:
-        print(f"  {orphans} orphan task(s) require your manual review — not auto-included.")
+        print(f"  {len(orphans)} orphan task(s) require your manual review — not auto-included.")
     print("=" * 78)
 
 
