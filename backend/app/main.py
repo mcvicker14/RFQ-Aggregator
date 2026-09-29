@@ -19,6 +19,7 @@ from app.api.routes import (
     opportunities,
     pipeline_stages,
     reference,
+    sample_data_audit,
     settings as settings_routes,
     tasks,
     users,
@@ -70,6 +71,7 @@ for router in (
     alerts.router,
     intelligence_items.router,
     intelligence_sources.router,
+    sample_data_audit.router,
     settings_routes.router,
     winloss.router,
 ):
