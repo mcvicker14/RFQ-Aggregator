@@ -280,7 +280,7 @@ def _to_raw_intelligence_item(candidate: dict, retrieved_at: datetime) -> RawInt
         intelligence_category=candidate["category"], source_url=source_url,
         retrieved_at=retrieved_at, fields=candidate["fields"],
         raw={k: v for k, v in candidate.items() if k not in ("fields", "category")},
-        confidence="verified_fact",
+        confidence="verified_fact" if sam_id else "unverified",
     )
 
 
