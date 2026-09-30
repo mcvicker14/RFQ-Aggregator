@@ -7,12 +7,15 @@ any of its logic -- this endpoint cannot disagree with the CLI because it IS the
 logic, just returned as JSON instead of printed. See that module's docstring for the
 full identification/safety reasoning.
 
-Read-only: only SELECTs run underneath this route (table_counts/audit_agencies/
-audit_companies/orphan_task_count never write anything), and nothing here imports
-seed/cleanup_sample_data.py or sqlalchemy's `delete`. Deletion stays a CLI-only,
---yes-gated, human-run step. Safe to delete this route (and its entry in app/main.py)
+Read-only: only SELECTs run underneath THIS route (table_counts/audit_agencies/
+audit_companies/orphan_tasks never write anything), and nothing here imports
+seed/cleanup_sample_data.py or sqlalchemy's `delete`. The two row-shaping helpers
+below (audit_rows/orphan_task_rows) are also imported by
+app/api/routes/sample_data_cleanup.py -- the separate, explicitly-confirm-gated route
+that performs the actual deletion -- so both routes render identical rows for the same
+underlying data. Safe to delete both route files (and their entries in app/main.py)
 once production's sample data has been reviewed and cleaned up -- nothing else in the
-app depends on it.
+app depends on them.
 """
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -26,14 +29,14 @@ from seed.audit_sample_data import audit_agencies, audit_companies, orphan_tasks
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
-def _rows(entries) -> list[SampleDataAuditRow]:
+def audit_rows(entries) -> list[SampleDataAuditRow]:
     return [
         SampleDataAuditRow(id=str(entity.id), name=entity.name, hard_blockers=hard, informational=info)
         for entity, hard, info in entries
     ]
 
 
-def _orphan_task_rows(tasks) -> list[OrphanTaskRow]:
+def orphan_task_rows(tasks) -> list[OrphanTaskRow]:
     return [
         OrphanTaskRow(
             id=str(t.id), title=t.title, status=t.status.value, priority=t.priority.value,
@@ -47,13 +50,13 @@ def _orphan_task_rows(tasks) -> list[OrphanTaskRow]:
 def get_sample_data_audit(db: Session = Depends(get_db), _admin: User = Depends(require_admin)):
     safe_agencies, blocked_agencies = audit_agencies(db)
     safe_companies, blocked_companies = audit_companies(db)
-    orphans = _orphan_task_rows(orphan_tasks(db))
+    orphans = orphan_task_rows(orphan_tasks(db))
     return SampleDataAuditResponse(
         counts=table_counts(db),
-        safe_agencies=_rows(safe_agencies),
-        blocked_agencies=_rows(blocked_agencies),
-        safe_companies=_rows(safe_companies),
-        blocked_companies=_rows(blocked_companies),
+        safe_agencies=audit_rows(safe_agencies),
+        blocked_agencies=audit_rows(blocked_agencies),
+        safe_companies=audit_rows(safe_companies),
+        blocked_companies=audit_rows(blocked_companies),
         orphan_task_count=len(orphans),
         orphan_tasks=orphans,
     )

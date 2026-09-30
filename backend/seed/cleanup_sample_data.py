@@ -22,6 +22,11 @@ Usage (from backend/, with the venv active and DATABASE_URL pointed at the datab
 clean up):
     python -m seed.cleanup_sample_data           # dry run -- audit only, deletes nothing
     python -m seed.cleanup_sample_data --yes     # performs the deletion
+
+Also called directly (same `cleanup()` function, not reimplemented) by the admin-only
+POST /api/admin/sample-data-cleanup route in app/api/routes/sample_data_cleanup.py --
+for hosts (e.g. Render's free tier) with no Shell to run this CLI against the deployed
+database. See that route's module docstring for its own confirmation/safety gates.
 """
 import argparse
 import sys
@@ -40,15 +45,29 @@ from app.models.opportunity import Opportunity  # noqa: E402
 from seed.audit_sample_data import audit_agencies, audit_companies, run_audit, table_counts  # noqa: E402
 
 
-def cleanup(db: Session, *, confirm: bool) -> None:
+def cleanup(db: Session, *, confirm: bool) -> dict:
+    """Returns a plain dict (not just prints) so a caller -- the CLI's main() below, or
+    the admin API route in app/api/routes/sample_data_cleanup.py -- can report exactly
+    what happened without re-deriving it. Every field is computed fresh against `db` on
+    this call; nothing here is cached or trusts a previous audit's numbers."""
     run_audit(db)
 
     safe_agencies, blocked_agencies = audit_agencies(db)
     safe_companies, blocked_companies = audit_companies(db)
+    before = table_counts(db)
 
     if not confirm:
         print("\nDry run only — nothing was deleted. Re-run with --yes to perform this cleanup.")
-        return
+        return {
+            "performed": False,
+            "before_counts": before,
+            "after_counts": None,
+            "deleted": None,
+            "safe_agencies": safe_agencies,
+            "blocked_agencies": blocked_agencies,
+            "safe_companies": safe_companies,
+            "blocked_companies": blocked_companies,
+        }
 
     print("\n" + "=" * 78)
     print("DELETING — this cannot be undone")
@@ -83,6 +102,20 @@ def cleanup(db: Session, *, confirm: bool) -> None:
     final = table_counts(db)
     for name, c in final.items():
         print(f"  {name:22s} total={c['total']:6d}   sample={c['sample']:6d}   real={c['real']:6d}")
+
+    return {
+        "performed": True,
+        "before_counts": before,
+        "after_counts": final,
+        "deleted": {
+            "opportunities": opp_deleted, "intelligence_items": item_deleted,
+            "agencies": agency_deleted, "companies": company_deleted,
+        },
+        "safe_agencies": safe_agencies,
+        "blocked_agencies": blocked_agencies,
+        "safe_companies": safe_companies,
+        "blocked_companies": blocked_companies,
+    }
 
 
 def main():

@@ -39,3 +39,28 @@ class SampleDataAuditResponse(BaseModel):
     # inherit sample-status from, so never auto-included in any count above.
     orphan_task_count: int
     orphan_tasks: list[OrphanTaskRow]
+
+
+class SampleDataCleanupRequest(BaseModel):
+    # Must equal CLEANUP_CONFIRM_VALUE (app/api/routes/sample_data_cleanup.py) exactly,
+    # or this call is treated as a dry run -- missing, blank, or any near-miss value
+    # (wrong case, extra whitespace, "yes"/"true"/etc.) all fail closed to dry-run, not
+    # an error. There is no other way to make this endpoint delete anything.
+    confirm: str | None = None
+
+
+class SampleDataCleanupResponse(BaseModel):
+    performed: bool  # False = dry run, nothing changed. True = the deletion ran.
+    confirm_value_required: str  # tells the caller the exact string this endpoint needs
+    report_text: str  # the identical human-readable report `python -m seed.cleanup_sample_data` prints
+    before_counts: dict[str, dict[str, int]]
+    after_counts: dict[str, dict[str, int]] | None  # only set when performed=True
+    deleted: dict[str, int] | None  # only set when performed=True
+    safe_agencies: list[SampleDataAuditRow]
+    blocked_agencies: list[SampleDataAuditRow]
+    safe_companies: list[SampleDataAuditRow]
+    blocked_companies: list[SampleDataAuditRow]
+    # Always returned, on both a dry run and a real deletion -- proof this table was
+    # never touched either way (see OrphanTaskRow).
+    orphan_task_count: int
+    orphan_tasks: list[OrphanTaskRow]

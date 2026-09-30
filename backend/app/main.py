@@ -20,6 +20,7 @@ from app.api.routes import (
     pipeline_stages,
     reference,
     sample_data_audit,
+    sample_data_cleanup,
     settings as settings_routes,
     tasks,
     users,
@@ -72,6 +73,7 @@ for router in (
     intelligence_items.router,
     intelligence_sources.router,
     sample_data_audit.router,
+    sample_data_cleanup.router,
     settings_routes.router,
     winloss.router,
 ):
