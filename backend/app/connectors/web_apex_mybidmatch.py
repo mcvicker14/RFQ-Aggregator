@@ -1,44 +1,22 @@
-"""APEX MyBidMatch connector — a private, per-subscriber daily bid-match page on
-OutreachSystems' mybidmatch.outreachsystems.com platform.
+"""MyBidMatch static subscriber index -> daily table -> article connector.
 
-**IMPORTANT — this parser is UNVERIFIED against the real page.** Direct inspection of
-the actual subscriber URL was attempted and blocked by this development environment's
-network egress policy (confirmed against multiple unrelated domains too, not specific
-to this one host — a policy denial, not a transient failure). What this module is
-built from instead is OutreachSystems' OWN public support documentation for the
-mybidmatch.com platform (found via web search, since that doesn't require fetching the
-target domain directly): a per-client PRIVATE page (the `?sub=<GUID>` token identifies
-the subscriber), showing a rolling 30-day window of bid matches, organized as dated
-groups -- click a date to see that day's matches in a table with columns # / Source /
-Agency / FSG (Federal Supply Group) / Title / Keywords -- then click the Title to reach
-the actual bid's detail page (on the originating government site, not this platform).
-
-That is GENERAL platform documentation, not a confirmed description of this specific
-subscriber's page. _parse_page() below is deliberately isolated into its own function,
-tries a structured-feed check first (per "prefer a feed/API if available"), then two
-independent HTML-extraction strategies (a table-row reading matching the documented
-column layout, and a generic anchor-based fallback for a div/list-based layout) so it
-degrades to "found nothing, here's exactly why" — recorded in last_run_diagnostics,
-the same way sam_gov.py surfaces retrieval diagnostics — rather than silently returning
-wrong data if the real page doesn't match either guess. Whoever next has real access to
-the page should treat this function (and it alone) as needing verification/rewrite;
-everything downstream of it (field mapping, dedup-against-SAM, relevance scoring,
-Discover/Source Manager wiring) does not depend on which extraction strategy succeeds.
+Verified against the live subscriber page on 2026-09-30. Only table rows with
+the exact FSG value C are eligible. Navigation/date rows are never listings.
+No feed is declared by the verified pages; unknown layouts fail closed.
 """
 import logging
 import re
 from datetime import date, datetime, timezone
+from urllib.parse import urljoin, urlparse, parse_qs
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 
 from app.connectors.base import ConnectorNotConfiguredError, IntelligenceConnector, RawIntelligenceItem
 from app.connectors.http_retry import request_with_retry
-from app.core.config import get_settings
 from app.models.enums import IntelligenceCategory, SetAsideType
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 SOURCE_NAME = "APEX MyBidMatch"
 PAGE_URL = "https://mybidmatch.outreachsystems.com/go?sub=DE69E915-3C54-4C4B-B715-015BE156A230"
@@ -51,7 +29,7 @@ MAX_RECORDS_PER_SYNC = 200
 # URL identifier match (added alongside this connector) catch the duplicate without
 # needing to guess at APEX's own link format. See module docstring and
 # app/services/dedup.py's IDENTIFIER_FIELDS.
-_SAM_NOTICE_ID = re.compile(r"sam\.gov/(?:opp|api/prod/opportunities/v\d+/noticedesc)[^A-Za-z0-9]*([A-Za-z0-9]{32})", re.IGNORECASE)
+_SAM_NOTICE_ID = re.compile(r"sam\.gov/(?:workspace/contract/opp|opp|api/prod/opportunities/v\d+/noticedesc)[^A-Za-z0-9]*([A-Za-z0-9]{32})", re.IGNORECASE)
 _SAM_URL_FALLBACK = re.compile(r"https?://sam\.gov/opp/([A-Za-z0-9]{32})/view", re.IGNORECASE)
 
 _SET_ASIDE_KEYWORDS: list[tuple[str, SetAsideType]] = [
@@ -158,138 +136,151 @@ def _cell_texts(row: Tag) -> list[str]:
     return [c.get_text(" ", strip=True) for c in row.find_all(["td", "th"])]
 
 
-def _try_table_rows(soup: BeautifulSoup) -> list[dict]:
-    """Strategy 1: a <table> whose rows roughly match the documented 6-column layout
-    (# / Source / Agency / FSG / Title / Keywords), Title cell holding the detail link.
-    Lenient on exact column count/order since this is a guess, not a confirmed schema."""
-    results = []
-    for table in soup.find_all("table"):
-        rows = table.find_all("tr")
-        for row in rows:
-            cells = row.find_all(["td"])
-            if len(cells) < 3:
-                continue
-            title_cell = None
-            for cell in cells:
-                if cell.find("a") is not None:
-                    title_cell = cell
-                    break
-            if title_cell is None:
-                continue
-            link = title_cell.find("a")
-            title = link.get_text(" ", strip=True)
-            if not title or len(title) < 5:
-                continue
-            href = link.get("href")
-            texts = _cell_texts(row)
-            results.append({
-                "title": title, "detail_url": href, "row_text": " | ".join(texts),
-                "cells": texts,
-            })
-    return results
-
-
-def _try_generic_listing_items(soup: BeautifulSoup) -> list[dict]:
-    """Strategy 2 (fallback if no table matched anything): any <li> or <div> that
-    contains exactly one substantial-length link, treated as one listing with that
-    link's text as the title and the element's full text as everything else to mine
-    fields from. Deliberately broad since this is a total-unknown fallback."""
-    results = []
-    seen_hrefs = set()
-    for container in soup.find_all(["li", "div", "article"]):
-        links = container.find_all("a", href=True)
-        if len(links) != 1:
-            continue
-        link = links[0]
-        title = link.get_text(" ", strip=True)
-        href = link["href"]
-        if not title or len(title) < 8 or href in seen_hrefs:
-            continue
-        full_text = container.get_text(" ", strip=True)
-        if len(full_text) < len(title) + 5:  # the link IS basically the whole element — not a listing row
-            continue
-        seen_hrefs.add(href)
-        results.append({"title": title, "detail_url": href, "row_text": full_text, "cells": []})
-    return results
+def _same_host_url(base: str, href: str, path: str) -> str | None:
+    url = urljoin(base, href)
+    parsed = urlparse(url)
+    return url if parsed.scheme == "https" and parsed.netloc == urlparse(PAGE_URL).netloc and parsed.path == path else None
 
 
 def _parse_page(html: str, base_url: str) -> tuple[list[dict], dict]:
-    """Returns (candidate_listings, diagnostics). Never raises for a structural
-    mismatch — an empty list with an explanatory diagnostic is the correct outcome
-    when the real page doesn't match either guessed structure, not a crash."""
+    """Recognize either the subscriber index or the documented daily table."""
     soup = BeautifulSoup(html, "html.parser")
-    diagnostics: dict = {}
-
-    feed_link = _find_feed_link(soup)
-    diagnostics["feed_link_found"] = feed_link
-    if feed_link:
-        logger.info("apex_mybidmatch: page declares a feed link (%s) — not yet consumed, HTML-parsing instead.", feed_link)
-
-    if _looks_javascript_rendered(soup):
-        diagnostics["likely_javascript_rendered"] = True
-        diagnostics["note"] = (
-            "Static HTML fetch returned little/no visible text alongside a JS-framework "
-            "marker — this page likely requires JavaScript rendering, which a plain HTTP "
-            "fetch cannot see. No listings were fabricated; see module docstring."
-        )
+    diagnostics = {"feed_link_found": _find_feed_link(soup),
+                   "likely_javascript_rendered": _looks_javascript_rendered(soup),
+                   "strategy_used": None, "candidates_found": 0,
+                   "rows_fetched": 0, "matched_fsg_c": 0,
+                   "skipped_non_c": 0, "skipped_missing_fsg": 0,
+                   "skipped_malformed": 0}
+    if diagnostics["likely_javascript_rendered"]:
+        diagnostics["note"] = "Page requires JavaScript rendering; no rows normalized."
         return [], diagnostics
-    diagnostics["likely_javascript_rendered"] = False
-
-    candidates = _try_table_rows(soup)
-    diagnostics["strategy_used"] = "table_rows" if candidates else None
-    if not candidates:
-        candidates = _try_generic_listing_items(soup)
-        diagnostics["strategy_used"] = "generic_listing_items" if candidates else None
-
-    for candidate in candidates:
-        if candidate.get("detail_url"):
-            candidate["detail_url"] = str(httpx.URL(base_url).join(candidate["detail_url"]))
-
+    candidates, bulletins = [], []
+    for table in soup.find_all("table"):
+        rows = [row for row in table.find_all("tr") if row.find_parent("table") is table]
+        if not rows:
+            continue
+        header = next((h for h in table.find_all("thead") if h.find_parent("table") is table), None) or rows[0]
+        headers = [c.get_text(" ", strip=True).lower() for c in header.find_all(["td", "th"])]
+        data_rows = [row for row in rows if row is not header and row.find_parent("thead") is None] if header.name == "thead" else rows[1:]
+        if headers == ["date", "articles", "read"]:
+            diagnostics["strategy_used"] = "bulletin_index"
+            for row in data_rows:
+                cells = row.find_all("td")
+                link = cells[0].find("a", href=True) if cells else None
+                if not link:
+                    continue
+                url = _same_host_url(base_url, link["href"], "/go")
+                posted = _parse_loose_date(link.get_text(" ", strip=True))
+                if url and parse_qs(urlparse(url).query).get("doc") and posted:
+                    bulletins.append({"url": url, "bulletin_date": posted.date().isoformat()})
+        elif all(h in headers for h in ("source", "agency", "fsg", "title", "keywords")):
+            diagnostics["strategy_used"] = "daily_table"
+            positions = {h: headers.index(h) for h in ("source", "agency", "fsg", "title", "keywords")}
+            for row in data_rows:
+                cells = row.find_all("td")
+                if not cells:
+                    continue
+                diagnostics["rows_fetched"] += 1
+                fsg = cells[positions["fsg"]].get_text(" ", strip=True) if len(cells) > positions["fsg"] else ""
+                if not fsg:
+                    diagnostics["skipped_missing_fsg"] += 1
+                    continue
+                if fsg != "C":
+                    diagnostics["skipped_non_c"] += 1
+                    continue
+                diagnostics["matched_fsg_c"] += 1
+                if len(cells) <= max(positions.values()):
+                    diagnostics["skipped_malformed"] += 1
+                    continue
+                link = cells[positions["title"]].find("a", href=True)
+                url = _same_host_url(base_url, link["href"], "/article") if link else None
+                if not url or not all(parse_qs(urlparse(url).query).get(k) for k in ("doc", "seq")):
+                    diagnostics["skipped_malformed"] += 1
+                    continue
+                candidates.append({"title": link.get_text(" ", strip=True), "detail_url": url,
+                    "fsg": fsg, "source_type": cells[positions["source"]].get_text(" ", strip=True),
+                    "agency": cells[positions["agency"]].get_text(" ", strip=True),
+                    "row_text": " | ".join(_cell_texts(row)), "bulletin_url": base_url})
+    diagnostics["bulletins"] = bulletins
     diagnostics["candidates_found"] = len(candidates)
-    if not candidates:
-        diagnostics["note"] = (
-            "Neither the documented table layout nor a generic link-list fallback found "
-            "any candidate listings. The real page structure differs from both guesses in "
-            "this module's docstring and needs to be re-verified directly."
-        )
+    if not diagnostics["strategy_used"]:
+        diagnostics["note"] = "Unrecognized page structure; must be re-verified. Generic links are not procurement records."
     return candidates, diagnostics
 
 
+def _parse_article(html: str, candidate: dict) -> dict:
+    soup = BeautifulSoup(html, "html.parser")
+    article = soup.select_one(".art-box")
+    if article is None or article.find("h4") is None:
+        raise ValueError("MyBidMatch article body/agency heading missing")
+    for navigation in article.select(".noprint"):
+        navigation.decompose()
+    heading = article.find("h4")
+    paragraphs = heading.find_next_siblings("p")
+    if not paragraphs:
+        raise ValueError("MyBidMatch article summary missing")
+    summary = paragraphs[0].get_text(" ", strip=True)
+    text = article.get_text(" ", strip=True)
+    number = re.search(r"OutreachSystems Article Number:\s*([A-Za-z0-9/.-]+)", text)
+    if not number:
+        raise ValueError("MyBidMatch article identifier missing")
+    # Article header must corroborate the row's FSG, never broaden its inclusion.
+    if not re.match(r"^C\s*--?\s+", summary):
+        raise ValueError("Article FSG does not corroborate table FSG C")
+    title = re.split(r"\s+(?:SOL\s|DUE\s|Due Date:|POC\s|URL\s|Contact:)", re.sub(r"^C\s*--?\s+", "", summary), maxsplit=1, flags=re.I)[0]
+    links = [urljoin(candidate["detail_url"], a["href"]) for a in article.find_all("a", href=True)]
+    sam_id = next((value for link in links if (value := _extract_sam_notice_id(link))), None)
+    solicitation = re.search(r"\bSOL\s+([A-Za-z0-9][A-Za-z0-9_. /-]*?)(?=\s+(?:DUE|POC|URL|Contact:)\b|$)", summary, re.I)
+    due = re.search(r"\bDUE(?:\s+Date)?\s*:?\s*(\d{1,2}/\d{1,2}/\d{4})(?:\s+at)?(?:\s+(\d{1,2}:\d{2}\s*[AP]M)(?:\s+([+-]\d{2}:\d{2}))?)?", summary, re.I)
+    due_label = re.search(r"\bDUE(?:\s+Date)?\s*:?\s*(.{0,85})", summary, re.I)
+    deadline = _parse_loose_date(due_label[1]) if due_label else None
+    if due and due[2] and due[3]:
+        deadline = datetime.strptime(due[1] + " " + re.sub(r"\s", "", due[2]).upper() + " " + due[3], "%m/%d/%Y %I:%M%p %z")
+    # Date-only/unzoned deadlines retain their original text and precision below.
+    source_type = candidate.get("source_type", "").lower()
+    body_start = " ".join(p.get_text(" ", strip=True) for p in paragraphs[:4])
+    if source_type == "awards":
+        category, notice_type = IntelligenceCategory.AWARD_INTELLIGENCE, "Award"
+    elif re.search(r"\bSOURCES SOUGHT\b|\bPRE[- ]?SOLICITATION\b|\bNOTICE OF INTENT\b", body_start[:3000], re.I):
+        category, notice_type = IntelligenceCategory.PRE_SOLICITATION, "Sources Sought / Pre-Solicitation"
+    else:
+        category, notice_type = IntelligenceCategory.LIVE_OPPORTUNITY, None
+    fields = {"title": title[:500], "description": text,
+              "agency_name": candidate.get("agency", "")[:300] or None,
+              "solicitation_number": solicitation[1].strip()[:120] if solicitation else None,
+              "naics_code": _extract_naics(text), "proposal_due_at": deadline}
+    location = re.search(r"Place of Performance:\s*(.*?)(?=\s+URL:|OutreachSystems Article|$)", text, re.I)
+    if location:
+        state = re.fullmatch(r"(.+?)\s+([A-Z]{2})(?:\s+\d{5}(?:-\d{4})?)?", location[1].strip())
+        if state:
+            fields.update(location_city=state[1].rstrip(", ")[:120], location_state=state[2])
+    # Only an explicit restriction label is evidence, not generic small-business prose.
+    restriction = re.search(r"(?:^|[.;])\s*Set[- ]aside\s*:\s*([^.;]+)", text, re.I)
+    if restriction and (any(k in restriction[1].lower() for k, _ in _SET_ASIDE_KEYWORDS) or restriction[1].strip().lower() in ("none", "unrestricted", "full and open")):
+        fields["set_aside"] = _map_set_aside(restriction[1])
+    # Do not mistake bid bonds, size standards or a shared MATOC ceiling for project value.
+    value = re.search(r"Estimated (?:contract |project )?value\s*:\s*(\$[\d,.]+(?:\s*(?:million|thousand|m|k))?)", text, re.I)
+    if value:
+        fields["estimated_value_high"] = _extract_money(value[1])
+    return {**candidate, "title": title, "fields": fields, "category": category,
+            "article_number": number[1], "article_text": text, "agency_heading": heading.get_text(" ", strip=True),
+            "sam_notice_id": sam_id, "notice_type": notice_type, "outbound_urls": links,
+            "deadline_text": due_label[0] if due_label else None,
+            "deadline_precision": "offset_datetime" if due and due[2] and due[3] else "date_only_assumed_utc" if deadline else None}
+
+
 def _to_raw_intelligence_item(candidate: dict, retrieved_at: datetime) -> RawIntelligenceItem | None:
-    title = candidate["title"].strip()
-    if not title:
+    # Defense in depth: no caller may bypass the pre-normalization inclusion rule.
+    if candidate.get("fsg") != "C" or not candidate.get("article_number"):
         return None
-    row_text = candidate.get("row_text", "")
-    detail_url = candidate.get("detail_url")
-
-    sam_notice_id = _extract_sam_notice_id(row_text) or (_extract_sam_notice_id(detail_url) if detail_url else None)
-    # A detected SAM.gov reference wins as source_url, constructed in the EXACT format
-    # sam_gov.py itself uses — see module docstring on why this (not APEX's own raw
-    # link) is what makes cross-source dedup work without guessing APEX's link format.
-    source_url = f"https://sam.gov/opp/{sam_notice_id}/view" if sam_notice_id else detail_url
-
-    cells = candidate.get("cells", [])
-    agency = cells[2] if len(cells) > 2 else None
-
-    external_id = sam_notice_id or (detail_url or title)
-
-    fields = {
-        "title": title[:500],
-        "agency_name": (agency or None) and agency[:300],
-        "naics_code": _extract_naics(row_text),
-        "set_aside": _map_set_aside(row_text),
-        "proposal_due_at": _parse_loose_date(_DEADLINE_LABELS.sub("", row_text)),
-        "estimated_value_high": _extract_money(row_text),
-    }
-
+    sam_id = candidate.get("sam_notice_id")
+    source_url = f"https://sam.gov/opp/{sam_id}/view" if sam_id else candidate["detail_url"]
     return RawIntelligenceItem(
-        external_id=str(external_id)[:200],
-        intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY,
-        source_url=source_url,
-        retrieved_at=retrieved_at,
-        fields=fields,
-        raw={"row_text": row_text, "detail_url": detail_url, "sam_notice_id_detected": sam_notice_id},
-        confidence="unverified" if not sam_notice_id else "verified_fact",
+        external_id=sam_id or candidate["article_number"],
+        intelligence_category=candidate["category"], source_url=source_url,
+        retrieved_at=retrieved_at, fields=candidate["fields"],
+        raw={k: v for k, v in candidate.items() if k not in ("fields", "category")},
+        confidence="verified_fact",
     )
 
 
@@ -299,46 +290,60 @@ class ApexMyBidMatchConnector(IntelligenceConnector):
     default_category = IntelligenceCategory.LIVE_OPPORTUNITY
 
     def __init__(self):
-        self.last_run_diagnostics: dict | None = None
+        self.last_run_diagnostics = None
 
     def is_configured(self) -> bool:
-        return True  # public page, no credentials — "configured" the moment PAGE_URL is reachable
+        return True
 
     def fetch(self, since: date, limit: int = MAX_RECORDS_PER_SYNC) -> list[RawIntelligenceItem]:
         retrieved_at = datetime.now(timezone.utc)
-        try:
-            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-                response = request_with_retry(client, "GET", PAGE_URL)
-        except Exception as exc:
-            raise ConnectorNotConfiguredError(
-                f"APEX MyBidMatch page could not be reached: {exc}. If this page requires a "
-                f"session cookie or has moved, the URL/access method needs to be re-verified."
-            ) from exc
-
-        if response.status_code != 200:
-            self.last_run_diagnostics = {
-                "status_code": response.status_code, "final_url": str(response.url),
-                "note": f"Page returned HTTP {response.status_code} instead of 200.",
-            }
-            return []
-
-        candidates, diagnostics = _parse_page(response.text, str(response.url))
-        diagnostics["final_url"] = str(response.url)
-        diagnostics["redirected"] = str(response.url) != PAGE_URL
-
-        kept: list[RawIntelligenceItem] = []
-        mapping_errors = 0
-        for candidate in candidates[:limit]:
-            try:
-                raw = _to_raw_intelligence_item(candidate, retrieved_at)
-            except Exception:
-                logger.exception("apex_mybidmatch: failed to map one candidate listing — skipped, not fabricated")
-                mapping_errors += 1
-                continue
-            if raw is not None:
-                kept.append(raw)
-        diagnostics["mapping_errors"] = mapping_errors
-        diagnostics["records_returned"] = len(kept)
-
+        diagnostics = {"parser_version": "verified-static-fsg-c-v1", "rows_fetched": 0,
+                       "matched_fsg_c": 0, "skipped_non_c": 0, "skipped_missing_fsg": 0,
+                       "skipped_malformed": 0, "bulletins_fetched": 0, "mapping_errors": 0,
+                       "detail_errors": [], "records_returned": 0, "duplicate_notices_in_run": 0}
         self.last_run_diagnostics = diagnostics
-        return kept
+        candidates = []
+        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            def get(url):
+                response = request_with_retry(client, "GET", url)
+                response.raise_for_status()
+                if urlparse(str(response.url)).netloc != urlparse(PAGE_URL).netloc:
+                    raise ValueError("MyBidMatch redirected outside the source host; access requires review")
+                return response
+            response = get(PAGE_URL)
+            _, index = _parse_page(response.text, str(response.url))
+            diagnostics.update(final_url=str(response.url), redirected=str(response.url) != PAGE_URL,
+                               feed_link_found=index["feed_link_found"], strategy_used=index["strategy_used"])
+            if index["strategy_used"] != "bulletin_index":
+                raise ValueError("Expected MyBidMatch dated bulletin index; refusing generic-link ingestion")
+            bulletins = sorted(index["bulletins"], key=lambda b: b["bulletin_date"], reverse=True)
+            for bulletin in bulletins:
+                if date.fromisoformat(bulletin["bulletin_date"]) < since:
+                    continue
+                response = get(bulletin["url"])
+                rows, daily = _parse_page(response.text, str(response.url))
+                if daily["strategy_used"] != "daily_table":
+                    raise ValueError("Expected MyBidMatch daily opportunity table; source layout changed")
+                diagnostics["bulletins_fetched"] += 1
+                for key in ("rows_fetched", "matched_fsg_c", "skipped_non_c", "skipped_missing_fsg", "skipped_malformed"):
+                    diagnostics[key] += daily[key]
+                candidates.extend({**r, "bulletin_date": bulletin["bulletin_date"]} for r in rows)
+            diagnostics["deferred_fsg_c_limit"] = max(0, len(candidates) - limit)
+            kept, seen = [], set()
+            for candidate in candidates[:limit]:
+                try:
+                    response = get(candidate["detail_url"])
+                    raw = _to_raw_intelligence_item(_parse_article(response.text, candidate), retrieved_at)
+                    if raw is None:
+                        raise ValueError("FSG C/detail evidence missing; row not normalized")
+                    if raw.external_id in seen:
+                        diagnostics["duplicate_notices_in_run"] += 1
+                        continue  # newest bulletin wins; no duplicate upserts in one run
+                    seen.add(raw.external_id)
+                    kept.append(raw)
+                except Exception as exc:
+                    diagnostics["mapping_errors"] += 1
+                    diagnostics["detail_errors"].append({"title": candidate["title"],
+                        "external_id": candidate["detail_url"], "error": str(exc)[:1000]})
+            diagnostics["records_returned"] = len(kept)
+            return kept
