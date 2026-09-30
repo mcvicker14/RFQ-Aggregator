@@ -18,6 +18,11 @@ from app.services.grants_relevance_scoring import (
     POSSIBLE_SIGNAL_THRESHOLD as GRANTS_POSSIBLE_SIGNAL_THRESHOLD,
     RELEVANT_THRESHOLD as GRANTS_RELEVANT_THRESHOLD,
 )
+from app.services.infrastructure_relevance_scoring import (
+    HIGHLY_RELEVANT_THRESHOLD as INFRA_HIGHLY_RELEVANT_THRESHOLD,
+    POSSIBLE_MATCH_THRESHOLD as INFRA_POSSIBLE_MATCH_THRESHOLD,
+    RELEVANT_THRESHOLD as INFRA_RELEVANT_THRESHOLD,
+)
 from app.services.sam_relevance_scoring import (
     HIGHLY_RELEVANT_THRESHOLD,
     POSSIBLE_MATCH_THRESHOLD,
@@ -53,6 +58,7 @@ _SORT_COLUMNS = {
     "early_signal_score": IntelligenceItem.early_signal_score,
     "sam_relevance_score": IntelligenceItem.sam_relevance_score,
     "grants_relevance_score": IntelligenceItem.grants_relevance_score,
+    "infrastructure_relevance_score": IntelligenceItem.infrastructure_relevance_score,
     "pursuit_score": _latest_pursuit_score.c.score,
 }
 
@@ -74,6 +80,16 @@ _GRANTS_RELEVANCE_TIER_FLOOR: dict[str, int | None] = {
     "high_value_signal": GRANTS_HIGH_VALUE_THRESHOLD,
     "relevant_signal": GRANTS_RELEVANT_THRESHOLD,
     "possible_signal": GRANTS_POSSIBLE_SIGNAL_THRESHOLD,
+    "all": None,
+}
+
+# Same pattern again, independent of the other two — mirrors
+# infrastructure_relevance_scoring.py's own tier boundaries. Only affects COREWORKS
+# RFQwire / APEX MyBidMatch items (the only two sources that ever get this score).
+_INFRASTRUCTURE_RELEVANCE_TIER_FLOOR: dict[str, int | None] = {
+    "highly_relevant": INFRA_HIGHLY_RELEVANT_THRESHOLD,
+    "relevant": INFRA_RELEVANT_THRESHOLD,
+    "possible_match": INFRA_POSSIBLE_MATCH_THRESHOLD,
     "all": None,
 }
 
@@ -127,9 +143,19 @@ def list_intelligence_items(
             "removes the filter entirely."
         ),
     ),
+    infrastructure_relevance_tier: str = Query(
+        "relevant",
+        pattern="^(highly_relevant|relevant|possible_match|all)$",
+        description=(
+            "Default Discover view is 'relevant' (Infrastructure Relevance Score >= 65) "
+            "and above, for COREWORKS RFQwire / APEX MyBidMatch items only — this never "
+            "hides items from any other source. 'possible_match' widens to >=50, 'all' "
+            "removes the filter entirely."
+        ),
+    ),
     sort_by: str = Query(
         "first_detected_at",
-        pattern="^(first_detected_at|proposal_due_at|estimated_value_high|funding_amount|early_signal_score|sam_relevance_score|grants_relevance_score|pursuit_score)$",
+        pattern="^(first_detected_at|proposal_due_at|estimated_value_high|funding_amount|early_signal_score|sam_relevance_score|grants_relevance_score|infrastructure_relevance_score|pursuit_score)$",
     ),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     limit: int = Query(100, le=2000),
@@ -192,6 +218,14 @@ def list_intelligence_items(
     if grants_floor is not None:
         stmt = stmt.where(
             or_(IntelligenceItem.grants_relevance_score.is_(None), IntelligenceItem.grants_relevance_score >= grants_floor)
+        )
+    infrastructure_floor = _INFRASTRUCTURE_RELEVANCE_TIER_FLOOR[infrastructure_relevance_tier]
+    if infrastructure_floor is not None:
+        stmt = stmt.where(
+            or_(
+                IntelligenceItem.infrastructure_relevance_score.is_(None),
+                IntelligenceItem.infrastructure_relevance_score >= infrastructure_floor,
+            )
         )
 
     column = _SORT_COLUMNS[sort_by]

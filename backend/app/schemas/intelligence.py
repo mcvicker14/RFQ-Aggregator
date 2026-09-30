@@ -109,6 +109,8 @@ class IntelligenceItemRead(ORMModel):
     sam_relevance_rationale: dict | None
     grants_relevance_score: int | None
     grants_relevance_rationale: dict | None
+    infrastructure_relevance_score: int | None
+    infrastructure_relevance_rationale: dict | None
     # Not an IntelligenceItem column — the latest OpportunityScore for the Opportunity
     # this item promoted to, if any (None for an unpromoted item or one with no score
     # yet). Set on the ORM instance by the route before serialization; see

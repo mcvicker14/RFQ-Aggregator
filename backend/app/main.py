@@ -1,5 +1,7 @@
 import logging
+from contextlib import asynccontextmanager
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -21,13 +23,15 @@ from app.api.routes import (
     reference,
     sample_data_audit,
     sample_data_cleanup,
+    scheduled_sync,
     settings as settings_routes,
     tasks,
     users,
     winloss,
 )
 from app.core.config import get_settings
-from app.db.session import engine
+from app.db.session import SessionLocal, engine
+from app.services.scheduled_sync import run_due_scheduled_syncs
 
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
@@ -39,12 +43,53 @@ if settings.is_production and settings.JWT_SECRET_KEY == "INSECURE-DEV-ONLY-CHAN
         "refusing to start rather than silently issuing forgeable tokens."
     )
 
+logger = logging.getLogger(__name__)
+
+
+def _run_scheduled_sync_tick() -> None:
+    """In-process safety net for COREWORKS/APEX scheduling — see
+    app/services/scheduled_sync.py's module docstring for the full three-layer design
+    and why an in-process-only scheduler isn't sufficient on its own (this web
+    process, like any free-tier Render web service, can sleep when idle; an external
+    GitHub Actions ping is what guarantees the check still happens even then). Runs
+    every SCHEDULED_SYNC_TICK_MINUTES while this process is awake, does nothing if
+    SCHEDULED_SYNC_SECRET isn't set (that only gates the EXTERNAL route, not this
+    in-process call, which needs no secret since it's already inside the trusted
+    process) — this tick always attempts the check; run_due_scheduled_syncs() itself
+    is what decides nothing is actually due most of the time."""
+    db = SessionLocal()
+    try:
+        results = run_due_scheduled_syncs(db)
+        ran = [r for r in results if r["ran"]]
+        if ran:
+            logger.info("Scheduled sync tick ran: %s", ran)
+    except Exception:
+        logger.exception("Scheduled sync tick failed")
+    finally:
+        db.close()
+
+
+SCHEDULED_SYNC_TICK_MINUTES = 15
+_scheduler = BackgroundScheduler()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _scheduler.add_job(
+        _run_scheduled_sync_tick, "interval", minutes=SCHEDULED_SYNC_TICK_MINUTES, id="scheduled_sync_tick",
+    )
+    _scheduler.start()
+    yield
+    _scheduler.shutdown(wait=False)
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     description="Principal Opportunity Intelligence — Find Earlier. Pursue Smarter. Win More.",
     version="0.1.0-mvp",
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -74,6 +119,7 @@ for router in (
     intelligence_sources.router,
     sample_data_audit.router,
     sample_data_cleanup.router,
+    scheduled_sync.router,
     settings_routes.router,
     winloss.router,
 ):

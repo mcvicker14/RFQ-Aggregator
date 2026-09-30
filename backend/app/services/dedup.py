@@ -20,7 +20,12 @@ from app.models.intelligence import IntelligenceItem, ProjectCluster
 
 # Identifier fields checked first, in order — an exact match on any of these is
 # treated as strong enough on its own (no title/date corroboration needed).
-IDENTIFIER_FIELDS = ("solicitation_number", "contract_number", "funding_award_number", "project_number")
+# source_url is checked right after solicitation_number: two sources linking to the
+# exact same canonical page/document are describing the same real-world procurement
+# regardless of what either one calls it, and this is what lets a connector without a
+# reliable solicitation number (e.g. COREWORKS re-listing the same RFQ, or APEX
+# surfacing a SAM.gov link) still dedup correctly. See docs/PHASE2_ARCHITECTURE.md §6.
+IDENTIFIER_FIELDS = ("solicitation_number", "source_url", "contract_number", "funding_award_number", "project_number")
 
 TITLE_LIKELY_THRESHOLD = 0.82
 TITLE_POSSIBLE_THRESHOLD = 0.55

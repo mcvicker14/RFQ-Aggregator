@@ -39,6 +39,7 @@ from app.services.activities import log_activity
 from app.services.dedup import find_and_cluster_candidates
 from app.services.early_signal_scoring import calculate_early_signal_score
 from app.services.grants_relevance_scoring import calculate_grants_relevance_score
+from app.services.infrastructure_relevance_scoring import calculate_infrastructure_relevance_score
 from app.services.sam_relevance_scoring import RELEVANT_THRESHOLD, calculate_sam_relevance_score
 from app.services.scoring import calculate_score
 
@@ -82,11 +83,32 @@ def _signal_detected_stage(db: Session) -> PipelineStage | None:
     return db.execute(select(PipelineStage).where(PipelineStage.name == "Signal Detected")).scalars().first()
 
 
-def promote_intelligence_item(db: Session, item: IntelligenceItem) -> Opportunity | None:
+def _promoted_cluster_sibling(db: Session, item: IntelligenceItem) -> IntelligenceItem | None:
+    """If item is clustered (dedup_status != UNCLUSTERED, set by find_and_cluster_
+    candidates() -- which must run before this for the check to see anything), look
+    for another member of the same cluster that's already been promoted to an
+    Opportunity. Used so a later, lower-priority source's matching item attaches to
+    the SAME Opportunity a higher-priority source's item already created, instead of
+    creating a second one. See app/services/dedup.py §6 for why clustering itself never
+    merges or deletes rows -- this is the one place a cluster's members converge, onto
+    one shared Opportunity, and only when a human hasn't already rejected the match."""
+    if item.project_cluster_id is None:
+        return None
+    return db.execute(
+        select(IntelligenceItem).where(
+            IntelligenceItem.project_cluster_id == item.project_cluster_id,
+            IntelligenceItem.id != item.id,
+            IntelligenceItem.opportunity_id.isnot(None),
+        )
+    ).scalars().first()
+
+
+def promote_intelligence_item(db: Session, item: IntelligenceItem) -> tuple[Opportunity | None, bool]:
     """Create-or-update the Opportunity this item represents, and write a normal
     OpportunitySource row so the opportunity detail page's existing provenance UI
-    needs no changes. No-op (returns None) for EARLY_SIGNAL/AWARD_INTELLIGENCE items —
-    those never become a pipeline entry on their own (§2/§5).
+    needs no changes. Returns (opportunity_or_None, attached_to_existing_cluster_sibling).
+    No-op (returns (None, False)) for EARLY_SIGNAL/AWARD_INTELLIGENCE items — those
+    never become a pipeline entry on their own (§2/§5).
 
     Also no-op for a SAM.gov item scored below RELEVANT_THRESHOLD (see
     app/services/sam_relevance_scoring.py) — broad SAM retrieval is intentional for
@@ -98,16 +120,32 @@ def promote_intelligence_item(db: Session, item: IntelligenceItem) -> Opportunit
     other source's items are unaffected (sam_relevance_score is only ever populated
     for source == "SAM.gov"), so this check is a pure no-op for them.
 
-    Known limitation, left for later: this does not yet check whether item's
-    project_cluster has an already-promoted sibling and attach to that same
-    Opportunity — it only matches on solicitation_number/external_id, same as the
-    pre-Phase-2 behavior. Cluster-aware promotion is a natural follow-up, not required
-    for this pass.
+    Cluster-aware: checked FIRST, before the solicitation_number/external_id match
+    below -- if find_and_cluster_candidates() (now sequenced before this call; see
+    run_sync()) already grouped this item with another source's item that's already
+    promoted, attach to that same Opportunity rather than creating a second one. This
+    is what makes "APEX matches an existing SAM item -> don't create a duplicate
+    Opportunity, keep the SAM item as primary, attach APEX as provenance" work: it's
+    the SAME mechanism for any two sources, not something special-cased to APEX/SAM by
+    name. A human's reject_cluster() call (dedup.py) detaches an item from its cluster
+    first, which is exactly what makes it independently promotable again afterward.
     """
     if item.intelligence_category not in PROMOTABLE_CATEGORIES:
-        return None
+        return None, False
     if item.sam_relevance_score is not None and item.sam_relevance_score < RELEVANT_THRESHOLD:
-        return None
+        return None, False
+
+    sibling = _promoted_cluster_sibling(db, item)
+    if sibling is not None:
+        opp = db.get(Opportunity, sibling.opportunity_id)
+        if opp is not None:
+            item.opportunity_id = opp.id
+            db.add(OpportunitySource(
+                opportunity_id=opp.id, source=item.source, source_url=item.source_url,
+                retrieved_at=item.retrieved_at, confidence=item.confidence, raw_snapshot=item.raw_metadata,
+            ))
+            db.flush()
+            return opp, True
 
     existing = db.get(Opportunity, item.opportunity_id) if item.opportunity_id else None
     if existing is None and item.solicitation_number:
@@ -182,7 +220,7 @@ def promote_intelligence_item(db: Session, item: IntelligenceItem) -> Opportunit
     ))
     calculate_score(db, opp)
     db.flush()
-    return opp
+    return opp, False
 
 
 _INTELLIGENCE_ITEM_COLUMNS = {c.key: c for c in sa_inspect(IntelligenceItem).columns}
@@ -352,20 +390,25 @@ def run_sync(
         db.commit()
         return run
 
-    fetched = created = updated = errored = 0
+    fetched = created = updated = deduplicated = errored = 0
     item_errors: list[dict] = []
     for raw in raw_items:
         fetched += 1
         try:
             item, was_created = _upsert_intelligence_item(db, source, raw)
             calculate_sam_relevance_score(item)  # must run before promotion — it gates it
-            promote_intelligence_item(db, item)
+            calculate_infrastructure_relevance_score(item)
+            # Clustering before promotion (not after, as earlier) so a same-cluster
+            # sibling that's already promoted is visible to promote_intelligence_item()
+            # below — see that function's cluster-aware-attach docstring.
+            find_and_cluster_candidates(db, item)
+            _, attached_to_sibling = promote_intelligence_item(db, item)
             calculate_early_signal_score(db, item)
             calculate_grants_relevance_score(item)  # no promotion gate needed — EARLY_SIGNAL is never promotable
-            find_and_cluster_candidates(db, item)
             db.commit()
             created += was_created
             updated += not was_created
+            deduplicated += attached_to_sibling
         except Exception as exc:
             db.rollback()
             logger.exception(
@@ -388,6 +431,7 @@ def run_sync(
     run.items_created = created
     run.items_updated = updated
     run.items_unchanged = max(0, fetched - created - updated - errored)
+    run.items_deduplicated = deduplicated
     run.items_errored = errored
     run.diagnostics = {**(run_diagnostics or {}), "item_errors": item_errors} if item_errors else run_diagnostics
     if errored == 0:

@@ -21,13 +21,17 @@ def test_only_sources_with_a_working_connector_are_enabled_on_first_creation(db)
     # these names first isolates that create path from whatever a previous run in this
     # database already committed.
     db.execute(IntelligenceSource.__table__.delete().where(
-        IntelligenceSource.name.in_(["SAM.gov", "USAspending.gov", "Grants.gov"])
+        IntelligenceSource.name.in_([
+            "SAM.gov", "USAspending.gov", "Grants.gov", "COREWORKS RFQwire", "APEX MyBidMatch",
+        ])
     ))
 
     seed_intelligence_sources(db)
 
     enabled = db.execute(select(IntelligenceSource).where(IntelligenceSource.is_enabled.is_(True))).scalars().all()
-    assert {s.name for s in enabled} == {"SAM.gov", "USAspending.gov", "Grants.gov"}
+    assert {s.name for s in enabled} == {
+        "SAM.gov", "USAspending.gov", "Grants.gov", "COREWORKS RFQwire", "APEX MyBidMatch",
+    }
 
 
 def test_reseeding_is_idempotent(db):

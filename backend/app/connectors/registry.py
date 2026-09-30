@@ -1,7 +1,9 @@
 from app.connectors.base import IntelligenceConnector
+from app.connectors.gmail_coreworks import CoreworksRfqwireConnector
 from app.connectors.grants_gov import GrantsGovConnector
 from app.connectors.sam_gov import SamGovConnector
 from app.connectors.usaspending import USAspendingConnector
+from app.connectors.web_apex_mybidmatch import ApexMyBidMatchConnector
 
 # A source_registry row's connector_key not present here simply has no working code
 # yet (see docs/PHASE2_ARCHITECTURE.md §5/§8) — the Source Manager UI and
@@ -10,6 +12,8 @@ _INTELLIGENCE_CONNECTORS: dict[str, IntelligenceConnector] = {
     "sam_gov": SamGovConnector(),
     "usaspending": USAspendingConnector(),
     "grants_gov": GrantsGovConnector(),
+    "gmail_coreworks": CoreworksRfqwireConnector(),
+    "web_apex_mybidmatch": ApexMyBidMatchConnector(),
 }
 
 

@@ -55,6 +55,13 @@ const GRANTS_RELEVANCE_TIER_OPTIONS = [
   { value: "all", label: "Grants: All Records" },
 ];
 
+const INFRASTRUCTURE_RELEVANCE_TIER_OPTIONS = [
+  { value: "highly_relevant", label: "COREWORKS/APEX: Highly Relevant (80+)" },
+  { value: "relevant", label: "COREWORKS/APEX: Relevant (65+) — default" },
+  { value: "possible_match", label: "COREWORKS/APEX: Possible Match (50+)" },
+  { value: "all", label: "COREWORKS/APEX: All Records" },
+];
+
 // Backend-driven (see date_status on GET /api/intelligence/items) — distinct from
 // DEADLINE_OPTIONS below, which is a client-side "how soon" narrowing filter, not an
 // expired/current status. "current" is the default: hides Live Opportunities /
@@ -153,6 +160,7 @@ function DiscoverPageInner() {
   const [sampleDataEnabled, setSampleDataEnabled] = useState(true);
   const [samRelevanceTier, setSamRelevanceTier] = useState("relevant");
   const [grantsRelevanceTier, setGrantsRelevanceTier] = useState("relevant_signal");
+  const [infrastructureRelevanceTier, setInfrastructureRelevanceTier] = useState("relevant");
   const [sortBy, setSortBy] = useState("first_detected_at");
   const [sortDir, setSortDir] = useState("desc");
 
@@ -171,9 +179,13 @@ function DiscoverPageInner() {
       q: q || undefined, category: category || undefined, source_id: sourceId || undefined,
       agency_id: agencyId || undefined, state: state || undefined, include_sample_data: !hideSampleData,
       date_status: dateStatus, sam_relevance_tier: samRelevanceTier, grants_relevance_tier: grantsRelevanceTier,
+      infrastructure_relevance_tier: infrastructureRelevanceTier,
       sort_by: sortBy, sort_dir: sortDir, limit: 2000,
     }),
-    [q, category, sourceId, agencyId, state, hideSampleData, dateStatus, samRelevanceTier, grantsRelevanceTier, sortBy, sortDir]
+    [
+      q, category, sourceId, agencyId, state, hideSampleData, dateStatus,
+      samRelevanceTier, grantsRelevanceTier, infrastructureRelevanceTier, sortBy, sortDir,
+    ]
   );
 
   function load() {
@@ -371,6 +383,12 @@ function DiscoverPageInner() {
               {GRANTS_RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
             </SelectContent>
           </Select>
+          <Select value={infrastructureRelevanceTier} onValueChange={setInfrastructureRelevanceTier}>
+            <SelectTrigger className="w-56 bg-card"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {INFRASTRUCTURE_RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
           {sampleDataEnabled && (
             <label className="flex items-center gap-1.5 rounded-md border border-input bg-card px-3 py-1.5 text-sm text-foreground">
               <input type="checkbox" checked={hideSampleData} onChange={(e) => setHideSampleData(e.target.checked)} />
@@ -378,10 +396,10 @@ function DiscoverPageInner() {
             </label>
           )}
           <p className="basis-full text-xs text-muted-foreground">
-            SAM.gov and Grants.gov records are broadly retrieved for auditability but only shown here at Relevant/Relevant
-            Signal or above by default — widen either Relevance filter to see lower-confidence matches or every record
-            fetched. Grants.gov is an early-signal source for future engineering procurement, not a list of grants to
-            apply for.
+            SAM.gov, Grants.gov, COREWORKS RFQwire, and APEX MyBidMatch records are broadly retrieved for auditability
+            but only shown here at Relevant/Relevant Signal or above by default — widen any Relevance filter to see
+            lower-confidence matches or every record fetched. Grants.gov is an early-signal source for future
+            engineering procurement, not a list of grants to apply for.
           </p>
         </div>
       )}

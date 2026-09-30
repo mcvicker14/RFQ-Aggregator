@@ -70,6 +70,22 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_MODEL: str = "claude-sonnet-5"
 
+    # COREWORKS RFQwire (Gmail) connector — read-only (gmail.readonly scope) access to
+    # the Gmail account that receives forwarded COREWORKS digest emails. See
+    # app/connectors/gmail_client.py and scripts/gmail_oauth_setup.py for the one-time
+    # setup that produces GMAIL_REFRESH_TOKEN; this app never sees the account's
+    # Google password, only this refresh token, generated once by the account owner.
+    GMAIL_CLIENT_ID: str | None = None
+    GMAIL_CLIENT_SECRET: str | None = None
+    GMAIL_REFRESH_TOKEN: str | None = None
+
+    # Scheduled-sync trigger (COREWORKS polling / APEX daily 6PM Central) — a shared
+    # secret for an external scheduler (e.g. a GitHub Actions cron workflow) to call
+    # the scheduled-sync-check endpoint, same shared-secret-in-body pattern as
+    # STATUS_BOARD_WEBHOOK_SECRET above, since this app has no other machine-to-machine
+    # auth mechanism. See app/api/routes/scheduled_sync.py.
+    SCHEDULED_SYNC_SECRET: str | None = None
+
     # SOQ Status Board sync — see app/services/status_board_sync.py and
     # app/services/status_board_webhook_client.py. This app holds no Google
     # credentials at all; it POSTs to a Google Apps Script Web App (bound to the SOQ

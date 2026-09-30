@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
@@ -475,6 +476,45 @@ def test_date_status_all_shows_everything_regardless_of_expiration(client, db):
 
     titles = {i["title"] for i in response.json()}
     assert titles == {"Available now", "Past due"}
+
+
+# date_status is category-driven (IntelligenceCategory), not source-specific — pinned
+# here to the two actual new sources by name/connector_type to confirm that generic
+# mechanism is what Discover's Available Now actually relies on for them too, not a
+# behavior that happens to need its own separate implementation per source.
+# `name` is unique on IntelligenceSource, and these two names are already real, seeded
+# rows in any database seed_intelligence_sources() has run against (including this
+# shared dev Postgres) — reuse the existing row rather than assume a clean table.
+
+def _real_source(db, name, connector_type):
+    existing = db.execute(select(IntelligenceSource).where(IntelligenceSource.name == name)).scalars().first()
+    return existing if existing is not None else _source(db, name=name, connector_type=connector_type)
+
+
+def test_date_status_default_hides_an_expired_coreworks_listing(client, db):
+    source = _real_source(db, "COREWORKS RFQwire", ConnectorType.EMAIL)
+    _item(db, source, external_id="A", title="Open RFQ", proposal_due_at=NOW + timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    _item(db, source, external_id="B", title="Closed RFQ", proposal_due_at=NOW - timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    assert [i["title"] for i in response.json()] == ["Open RFQ"]
+
+
+def test_date_status_default_hides_an_expired_apex_listing(client, db):
+    source = _real_source(db, "APEX MyBidMatch", ConnectorType.HTML_SCRAPE)
+    _item(db, source, external_id="A", title="Open bid", proposal_due_at=NOW + timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    _item(db, source, external_id="B", title="Closed bid", proposal_due_at=NOW - timedelta(days=5),
+          intelligence_category=IntelligenceCategory.LIVE_OPPORTUNITY)
+    db.commit()
+
+    response = client.get("/api/intelligence/items", params={"source_id": str(source.id)})
+
+    assert [i["title"] for i in response.json()] == ["Open bid"]
 
 
 # --- status_board_sync: lets Discover show the right action for an already-tracked --

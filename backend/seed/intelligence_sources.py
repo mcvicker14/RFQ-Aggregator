@@ -33,6 +33,8 @@ REGIONAL = JurisdictionLevel.REGIONAL
 
 API = ConnectorType.API
 MANUAL = ConnectorType.MANUAL
+EMAIL = ConnectorType.EMAIL
+HTML_SCRAPE = ConnectorType.HTML_SCRAPE
 
 LIVE = IntelligenceCategory.LIVE_OPPORTUNITY
 PRE = IntelligenceCategory.PRE_SOLICITATION
@@ -66,6 +68,33 @@ SOURCES: list[dict] = [
         source_url="https://www.grants.gov", connector_type=API, connector_key="grants_gov",
         requires_auth=False, default_intelligence_category=SIGNAL,
         notes="Federal grant funding announcements (infrastructure/water/wastewater/transportation-filtered) — an early signal for the design/engineering RFQs that typically follow a grant award.",
+    ),
+    dict(
+        name="COREWORKS RFQwire", organization="COREWORKS (Ralph P. Fontcuberta, III)",
+        jurisdiction_level=REGIONAL, geographic_coverage="Louisiana, Mississippi",
+        source_url="https://rfq.dbacoreworks.com", connector_type=EMAIL, connector_key="gmail_coreworks",
+        requires_auth=True,
+        auth_notes="Read-only Gmail API access (gmail.readonly scope) to the mailbox that receives "
+                    "forwarded COREWORKS digest emails — see app/connectors/gmail_client.py and "
+                    "scripts/gmail_oauth_setup.py for the one-time OAuth setup required.",
+        default_intelligence_category=LIVE,
+        notes="Regional A/E RFQ digest covering Louisiana and Mississippi, hand-compiled by COREWORKS "
+              "and received as forwarded emails, not a published feed/API.",
+        polling_frequency_hours=3,
+    ),
+    dict(
+        name="APEX MyBidMatch", organization="OutreachSystems",
+        jurisdiction_level=FEDERAL, geographic_coverage="Nationwide",
+        source_url="https://mybidmatch.outreachsystems.com/go?sub=DE69E915-3C54-4C4B-B715-015BE156A230",
+        connector_type=HTML_SCRAPE, connector_key="web_apex_mybidmatch",
+        requires_auth=False,
+        auth_notes="Public per-subscriber link (the ?sub= token identifies the subscription) — no "
+                    "login/session cookie needed.",
+        default_intelligence_category=LIVE,
+        notes="Daily bid-match digest from OutreachSystems' MyBidMatch platform. This connector's page "
+              "parser is UNVERIFIED against the live page (direct inspection was blocked by this "
+              "development environment's network policy) — see app/connectors/web_apex_mybidmatch.py's "
+              "module docstring before relying on its output.",
     ),
     # --- Federal core: needs research/nonstandard access --------------------------
     dict(
@@ -329,7 +358,9 @@ def seed_intelligence_sources(db: Session) -> None:
 
         existing = db.execute(select(IntelligenceSource).where(IntelligenceSource.name == entry["name"])).scalars().first()
         if existing is None:
-            is_working_connector = entry["connector_key"] in ("sam_gov", "usaspending", "grants_gov")
+            is_working_connector = entry["connector_key"] in (
+                "sam_gov", "usaspending", "grants_gov", "gmail_coreworks", "web_apex_mybidmatch",
+            )
             db.add(IntelligenceSource(is_enabled=is_working_connector, **entry))
         else:
             for field_name in _UPDATE_ON_RESEED:

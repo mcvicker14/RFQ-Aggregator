@@ -182,6 +182,7 @@ class ConnectorType(str, enum.Enum):
     HTML_SCRAPE = "html_scrape"
     PDF_PARSE = "pdf_parse"
     MANUAL = "manual"
+    EMAIL = "email"
 
 
 class SourceHealthStatus(str, enum.Enum):

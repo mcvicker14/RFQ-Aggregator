@@ -223,6 +223,7 @@ export interface IntelligenceItemListParams {
   date_status?: string;
   sam_relevance_tier?: string;
   grants_relevance_tier?: string;
+  infrastructure_relevance_tier?: string;
   sort_by?: string;
   sort_dir?: string;
   limit?: number;

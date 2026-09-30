@@ -157,6 +157,18 @@ class IntelligenceItem(UUIDPKMixin, TimestampMixin, Base):
     grants_relevance_score: Mapped[int | None] = mapped_column(Integer, default=None)
     grants_relevance_rationale: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
+    # "Is this listing worth surfacing as Principal-relevant civil/infrastructure
+    # work?" — the shared relevance adapter for sources whose relevance concept is
+    # identical (civil engineering / water-wastewater / drainage-stormwater / utilities
+    # / roads-transportation / surveying / A-E / public works / environmental
+    # infrastructure / airports-ports / coastal-flood-resilience), unlike SAM.gov's and
+    # Grants.gov's own source-specific scores above. Only populated for source in
+    # ("COREWORKS RFQwire", "APEX MyBidMatch") today — see
+    # app/services/infrastructure_relevance_scoring.py; NULL for every other source,
+    # which is not filtered by it.
+    infrastructure_relevance_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    infrastructure_relevance_rationale: Mapped[dict | None] = mapped_column(JSONB, default=None)
+
     raw_metadata: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
     first_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -208,6 +220,12 @@ class IntelligenceSyncRun(UUIDPKMixin, TimestampMixin, Base):
     items_created: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     items_updated: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     items_unchanged: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # A fetched item that matched an EXISTING item from a different source closely
+    # enough to attach to its already-promoted Opportunity instead of creating a new
+    # one or a new IntelligenceItem row — see promote_intelligence_item()'s cluster-
+    # aware attach path in intelligence_sync.py. Distinct from items_updated, which only
+    # ever counts this SAME source's own previously-created rows being refreshed.
+    items_deduplicated: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     items_errored: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error_detail: Mapped[str | None] = mapped_column(Text, default=None)
     # Connector-reported query diagnostics (date window, filters used, SAM.gov-style

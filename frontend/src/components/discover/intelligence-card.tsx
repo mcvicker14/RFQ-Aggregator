@@ -75,12 +75,24 @@ export function IntelligenceCard({
   const effectiveSync = statusBoardSync ?? item.status_board_sync;
   const syncStatus = effectiveSync?.status;
 
-  const rationale = item.grants_relevance_rationale ?? item.sam_relevance_rationale;
-  const relevanceScore = item.grants_relevance_score ?? item.sam_relevance_score;
+  // At most one of these three is ever non-null for a given item — each relevance
+  // engine is gated by source name (see the three *_relevance_scoring.py modules) —
+  // so this is a "pick whichever source actually scored this item" chain, not a
+  // priority ranking between sources.
+  const rationale = item.grants_relevance_rationale ?? item.sam_relevance_rationale ?? item.infrastructure_relevance_rationale;
+  const relevanceScore = item.grants_relevance_score ?? item.sam_relevance_score ?? item.infrastructure_relevance_score;
   const relevanceTier = item.grants_relevance_score !== null
     ? item.grants_relevance_rationale?.tier
-    : item.sam_relevance_rationale?.tier;
-  const relevanceLabel = item.grants_relevance_score !== null ? "Grant Relevance" : item.sam_relevance_score !== null ? "SAM Relevance" : null;
+    : item.sam_relevance_score !== null
+      ? item.sam_relevance_rationale?.tier
+      : item.infrastructure_relevance_rationale?.tier;
+  const relevanceLabel = item.grants_relevance_score !== null
+    ? "Grant Relevance"
+    : item.sam_relevance_score !== null
+      ? "SAM Relevance"
+      : item.infrastructure_relevance_score !== null
+        ? "Relevance"
+        : null;
 
   const deadline = formatDeadline(item.proposal_due_at);
   const daysLeft = daysUntil(item.proposal_due_at);
