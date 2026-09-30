@@ -25,14 +25,23 @@ from sqlalchemy import select
 
 import app.connectors.sam_gov as sam_gov_module
 from app.connectors.registry import get_intelligence_connector
-from app.connectors.web_apex_mybidmatch import _to_raw_intelligence_item as apex_to_raw_item
-from app.models.enums import DedupStatus, SyncRunStatus, SyncTriggeredBy
+from app.connectors.web_apex_mybidmatch import _to_raw_intelligence_item, _extract_sam_notice_id
+from app.models.enums import DedupStatus, SyncRunStatus, SyncTriggeredBy, IntelligenceCategory
 from app.models.intelligence import IntelligenceItem, IntelligenceSource
 from app.models.opportunity import Opportunity, OpportunitySource
 from app.services.intelligence_sync import run_sync
 from seed.intelligence_sources import seed_intelligence_sources
 
 RETRIEVED_AT = datetime.now(timezone.utc)
+
+
+def apex_to_raw_item(candidate, retrieved_at):
+    """Integration fixtures represent validated FSG C article output, not index rows."""
+    return _to_raw_intelligence_item({**candidate, "fsg": "C",
+        "article_number": candidate["detail_url"],
+        "sam_notice_id": _extract_sam_notice_id(candidate["detail_url"]),
+        "category": IntelligenceCategory.LIVE_OPPORTUNITY,
+        "fields": {"title": candidate["title"], "agency_name": candidate["cells"][2]}}, retrieved_at)
 NOTICE_ID = "dedup0test0notice0id000000000000"  # 32 chars, shaped like a real SAM.gov noticeId
 
 
@@ -81,7 +90,7 @@ def test_apex_listing_matching_an_existing_sam_item_attaches_instead_of_duplicat
         "title": "Levee Rehabilitation Design — see SAM.gov notice",
         "detail_url": f"https://sam.gov/opp/{NOTICE_ID}/view",
         "row_text": "APEX MyBidMatch listing referencing the same SAM.gov notice",
-        "cells": ["1", "SAM.gov", "USACE New Orleans District", "Y1ZZ"],
+        "cells": ["1", "SAM.gov", "USACE New Orleans District", "C"],
     }
     monkeypatch.setattr(apex_connector, "fetch", lambda since, **filters: [apex_to_raw_item(apex_candidate, RETRIEVED_AT)])
 
@@ -159,7 +168,7 @@ def test_apex_listing_with_no_sam_match_still_promotes_its_own_opportunity(db, m
         "title": "Storm Drain Replacement, Phase II — City of Baton Rouge",
         "detail_url": "https://brla.gov/bids/2026-storm-drain-phase2",
         "row_text": "City of Baton Rouge DPW — no SAM.gov reference, unrelated project",
-        "cells": ["2", "City of Baton Rouge", "DPW", "C219"],
+        "cells": ["2", "City of Baton Rouge", "DPW", "C"],
     }
     monkeypatch.setattr(apex_connector, "fetch", lambda since, **filters: [apex_to_raw_item(unrelated_candidate, RETRIEVED_AT)])
 
@@ -198,7 +207,7 @@ def test_resyncing_the_same_apex_listing_does_not_re_deduplicate_or_duplicate(db
         "title": "Levee Rehabilitation Design — see SAM.gov notice",
         "detail_url": f"https://sam.gov/opp/{NOTICE_ID}/view",
         "row_text": "APEX MyBidMatch listing referencing the same SAM.gov notice",
-        "cells": ["1", "SAM.gov", "USACE New Orleans District", "Y1ZZ"],
+        "cells": ["1", "SAM.gov", "USACE New Orleans District", "C"],
     }
     monkeypatch.setattr(apex_connector, "fetch", lambda since, **filters: [apex_to_raw_item(apex_candidate, RETRIEVED_AT)])
 
@@ -236,3 +245,4 @@ def test_resyncing_the_same_apex_listing_does_not_re_deduplicate_or_duplicate(db
     # deliberate append-only provenance history, not a single row kept in sync, so a
     # resync is expected to grow it, not duplicate-guard it down to one.
     assert len(provenance_rows) == 2
+
