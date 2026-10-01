@@ -2,13 +2,25 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ChevronDown, ChevronUp, ExternalLink, MapPin, Building2, CalendarClock, Radar } from "lucide-react";
+import { ChevronDown, ChevronUp, ExternalLink, MapPin, Building2, CalendarClock, Radar, X } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { SampleDataBadge, RelevanceTierBadge, IntelligenceCategoryBadge } from "@/components/domain/badges";
 import { cn, formatDate, formatDeadline, daysUntil } from "@/lib/utils";
-import type { IntelligenceItem, StatusBoardSync } from "@/types";
+import type { DismissalReason, IntelligenceItem, StatusBoardSync } from "@/types";
+
+const DISMISSAL_REASONS: { value: DismissalReason; label: string }[] = [
+  { value: "not_our_discipline", label: "Not our discipline" },
+  { value: "wrong_geography", label: "Wrong geography" },
+  { value: "construction_only", label: "Construction only" },
+  { value: "too_small", label: "Too small" },
+  { value: "too_large", label: "Too large" },
+  { value: "duplicate", label: "Duplicate" },
+  { value: "not_pursuing", label: "Not pursuing" },
+  { value: "other", label: "Other" },
+];
 
 // Mirrors backend/app/services/intelligence_sync.py's PROMOTABLE_CATEGORIES exactly —
 // only a Live Opportunity or Pre-Solicitation is ever a real pursuit to track; Early
@@ -49,6 +61,7 @@ export function IntelligenceCard({
   item,
   onTrack,
   onSyncStatusBoard,
+  onDismiss,
   statusBoardSync,
 }: {
   item: IntelligenceItem;
@@ -57,6 +70,12 @@ export function IntelligenceCard({
   // time (item.status_board_sync is null/absent) and to retry after a failure. Never
   // creates a second Opportunity; see discover/page.tsx's handleSyncStatusBoard.
   onSyncStatusBoard?: (item: IntelligenceItem) => Promise<void>;
+  // "Not Interested" — hides this item (and every other source's copy of the same
+  // procurement, via its cluster) from Discover's default view. Omitted entirely
+  // (never shown) for an already-tracked item — see discover/page.tsx's
+  // handleDismiss and backend/app/services/dismissal.py for why that's enforced
+  // server-side too, not just hidden here.
+  onDismiss?: (item: IntelligenceItem, reason?: DismissalReason) => Promise<void>;
   // Session-local, optimistic: set the moment *this* Discover visit tracks or syncs
   // this item, before a refetch would otherwise reflect it. Overlays
   // item.status_board_sync (the server's own current state, populated by the backend
@@ -69,6 +88,9 @@ export function IntelligenceCard({
   const [tracking, setTracking] = useState(false);
   const [trackError, setTrackError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [dismissOpen, setDismissOpen] = useState(false);
+  const [dismissing, setDismissing] = useState(false);
+  const [dismissError, setDismissError] = useState<string | null>(null);
 
   const tracked = !!item.opportunity_id;
   const canTrack = !tracked && PROMOTABLE_CATEGORIES.has(item.intelligence_category);
@@ -123,6 +145,20 @@ export function IntelligenceCard({
       await onSyncStatusBoard(item);
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function handleDismiss(reason?: DismissalReason) {
+    if (!onDismiss) return;
+    setDismissing(true);
+    setDismissError(null);
+    try {
+      await onDismiss(item, reason);
+      setDismissOpen(false);
+    } catch (e) {
+      setDismissError(e instanceof Error ? e.message : "Failed to dismiss — try again");
+    } finally {
+      setDismissing(false);
     }
   }
 
@@ -233,15 +269,28 @@ export function IntelligenceCard({
 
       <div className="mt-auto flex items-center justify-between gap-2 pt-1.5">
         {!tracked ? (
-          canTrack ? (
-            <Button size="sm" onClick={handleTrack} disabled={tracking}>
-              {tracking ? "Tracking…" : "Track + Add to Status Board"}
-            </Button>
-          ) : (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
-              View Intelligence
-            </Button>
-          )
+          <div className="flex items-center gap-1.5">
+            {canTrack ? (
+              <Button size="sm" onClick={handleTrack} disabled={tracking}>
+                {tracking ? "Tracking…" : "Track + Add to Status Board"}
+              </Button>
+            ) : (
+              <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+                View Intelligence
+              </Button>
+            )}
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={() => setDismissOpen(true)}
+                title="Dismiss — not interested"
+                aria-label="Dismiss — not interested"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         ) : syncStatus === "synced" ? (
           // A status, not an action — "Tracked in app" and "On Status Board" are two
           // separate facts, and this item already has both, so one pill covers it.
@@ -291,6 +340,42 @@ export function IntelligenceCard({
       {syncStatus === "failed" && effectiveSync?.last_error && (
         <p className="text-xs text-warning">{effectiveSync.last_error}</p>
       )}
+
+      <Dialog open={dismissOpen} onOpenChange={setDismissOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Dismiss this item?</DialogTitle>
+            <DialogDescription>
+              Hides it from Discover going forward — including any other source&apos;s copy of the
+              same procurement. It&apos;s never deleted; find it again under the Dismissed filter,
+              where you can restore it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-1.5">
+            {DISMISSAL_REASONS.map((r) => (
+              <Button
+                key={r.value}
+                size="sm"
+                variant="outline"
+                disabled={dismissing}
+                onClick={() => handleDismiss(r.value)}
+                className="justify-start font-normal"
+              >
+                {r.label}
+              </Button>
+            ))}
+          </div>
+          {dismissError && <p className="text-xs text-destructive">{dismissError}</p>}
+          <DialogFooter>
+            <Button size="sm" variant="outline" onClick={() => setDismissOpen(false)} disabled={dismissing}>
+              Cancel
+            </Button>
+            <Button size="sm" variant="destructive" onClick={() => handleDismiss(undefined)} disabled={dismissing}>
+              {dismissing ? "Dismissing…" : "Dismiss without a reason"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

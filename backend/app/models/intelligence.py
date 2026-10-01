@@ -19,6 +19,7 @@ from app.db.base import Base, TimestampMixin, UUIDPKMixin, fk_uuid, pg_enum, utc
 from app.models.enums import (
     ConnectorType,
     DedupStatus,
+    DismissalReason,
     EstimatedTimeToProcurement,
     IntelligenceCategory,
     JurisdictionLevel,
@@ -185,6 +186,17 @@ class IntelligenceItem(UUIDPKMixin, TimestampMixin, Base):
 
     is_sample_data: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
 
+    # "Not Interested" on Discover — see app/services/dismissal.py. Hides the item from
+    # Discover's default view without ever deleting the row or its provenance. Never
+    # the sole source of truth for a CLUSTERED item: a dismissed item whose cluster is
+    # itself dismissed (project_cluster_id -> ProjectCluster.is_dismissed) is ALSO
+    # hidden even if this flag happens to be False on some individual sibling row — see
+    # the route's effective-dismissed computation and dismissal.py's propagation.
+    is_dismissed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    dismissed_by_user_id: Mapped[uuid.UUID | None] = fk_uuid("users.id", nullable=True)
+    dismissal_reason: Mapped[DismissalReason | None] = mapped_column(pg_enum(DismissalReason), default=None)
+
     # ProvenanceMixin's shape, added by hand (see class docstring)
     source: Mapped[str] = mapped_column(String(120), nullable=False)
     source_url: Mapped[str | None] = mapped_column(String(1000), default=None)
@@ -203,6 +215,17 @@ class ProjectCluster(UUIDPKMixin, TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text, default=None)
     confirmed_by_user_id: Mapped[uuid.UUID | None] = fk_uuid("users.id", nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    # Cluster-wide "Not Interested" — the mechanism that makes dismissing one source's
+    # copy of a procurement suppress every OTHER source's copy too, including one a
+    # future sync hasn't even created yet (a newly-fetched item that
+    # find_and_cluster_candidates() links into this cluster is suppressed by this flag
+    # alone, with no per-item propagation needed at sync time — see
+    # app/services/dismissal.py and intelligence_sync.py's per-item loop).
+    is_dismissed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    dismissed_by_user_id: Mapped[uuid.UUID | None] = fk_uuid("users.id", nullable=True)
+    dismissal_reason: Mapped[DismissalReason | None] = mapped_column(pg_enum(DismissalReason), default=None)
 
 
 class IntelligenceSyncRun(UUIDPKMixin, TimestampMixin, Base):

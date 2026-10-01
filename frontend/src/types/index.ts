@@ -83,7 +83,17 @@ export type JurisdictionLevel = "federal" | "state" | "local" | "regional" | "pr
 export type ConnectorType = "api" | "rss" | "structured_file" | "csv" | "html_scrape" | "pdf_parse" | "manual";
 export type SourceHealthStatus = "never_run" | "healthy" | "degraded" | "failing" | "needs_configuration" | "manual_only";
 export type SyncRunStatus = "running" | "success" | "partial_failure" | "failure";
-export type SyncTriggeredBy = "manual" | "scheduled";
+export type SyncTriggeredBy = "manual" | "scheduled" | "webhook";
+
+export type DismissalReason =
+  | "not_our_discipline"
+  | "wrong_geography"
+  | "construction_only"
+  | "too_small"
+  | "too_large"
+  | "duplicate"
+  | "not_pursuing"
+  | "other";
 
 export type AlertCategory =
   | "new_matching_opportunity"
@@ -445,10 +455,73 @@ export interface IntelligenceKpis {
   last_viewed_at: string | null;
 }
 
+export type StatusBoardMatchMethod =
+  | "sync_relationship"
+  | "source_url"
+  | "solicitation_number"
+  | "title_client_due_date"
+  | "unmatched";
+
+export interface StatusBoardRow {
+  id: string;
+  sheet_row_number: number;
+  date_added: string | null;
+  due_date: string | null;
+  due_time: string | null;
+  client_project_location: string | null;
+  rfq_title: string;
+  digital_option: string | null;
+  standard_form: string | null;
+  submit_y_n: string | null;
+  date_submitted: string | null;
+  importance: string | null;
+  quality: string | null;
+  probability: string | null;
+  go_bys: string | null;
+  notes: string | null;
+  submitted_y_n: string | null;
+  link: string | null;
+  due_date_parsed: string | null;
+  is_submit_y: boolean;
+  is_submitted_y: boolean;
+  opportunity_id: string | null;
+  match_method: StatusBoardMatchMethod;
+  is_manual_entry: boolean;
+  last_synced_at: string;
+}
+
+export interface StatusBoardListResponse {
+  rows: StatusBoardRow[];
+  last_sync_attempted_at: string | null;
+  last_sync_succeeded_at: string | null;
+  last_error: string | null;
+  sheet_url: string | null;
+}
+
+export type StatusBoardFilterName =
+  | "all_active"
+  | "submit_y"
+  | "submit_n_blank"
+  | "submitted"
+  | "not_submitted"
+  | "due_soon"
+  | "past_due";
+
+export type StatusBoardSortField = "due_date" | "date_added" | "client" | "submit_status" | "importance" | "probability";
+
+export interface StatusBoardCounts {
+  on_status_board: number;
+  selected_to_submit: number;
+  due_soon: number;
+  submitted: number;
+  past_due: number;
+}
+
 export interface DashboardSummary {
   kpis: KpiCards;
   include_samples: boolean;
   intelligence: IntelligenceKpis;
+  status_board: StatusBoardCounts;
   pipeline_by_stage: ChartBucket[];
   pipeline_by_agency: ChartBucket[];
   pipeline_by_state: ChartBucket[];
@@ -641,4 +714,9 @@ export interface IntelligenceItem {
   source_url: string | null;
   retrieved_at: string;
   confidence: string;
+  // Effective dismissed state (item's own flag OR its cluster's — see
+  // backend/app/services/dismissal.py). Always false for an already-tracked item.
+  is_dismissed: boolean;
+  dismissed_at: string | null;
+  dismissal_reason: DismissalReason | null;
 }

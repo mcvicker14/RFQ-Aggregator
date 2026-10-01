@@ -23,6 +23,9 @@ import type {
   OpportunityScore,
   PipelineStage,
   RevenueForecast,
+  StatusBoardFilterName,
+  StatusBoardListResponse,
+  StatusBoardSortField,
   StatusBoardSync,
   SyncAllResult,
   Task,
@@ -220,6 +223,10 @@ export interface IntelligenceItemListParams {
   set_aside?: string;
   include_sample_data?: boolean;
   unpromoted_only?: boolean;
+  // "active" (default) is the normal Discover feed; "dismissed" is the recovery view
+  // — see backend/app/api/routes/intelligence_items.py's `view` param for exactly
+  // what each one does to the other filters below.
+  view?: "active" | "dismissed";
   date_status?: string;
   sam_relevance_tier?: string;
   grants_relevance_tier?: string;
@@ -235,6 +242,30 @@ export const intelligenceItemsApi = {
     api.get<IntelligenceItem[]>(`/api/intelligence/items${buildQuery(params)}`),
   timeline: (opportunityId: string) =>
     api.get<IntelligenceItem[]>(`/api/opportunities/${opportunityId}/intelligence-timeline`),
+  // Both idempotent-ish from the UI's perspective: dismiss on an already-dismissed
+  // item or restore on an already-active one just re-confirms the same state (the
+  // backend only ever rejects dismissing an already-TRACKED item — see
+  // backend/app/services/dismissal.py).
+  dismiss: (id: string, reason?: string) =>
+    api.post<IntelligenceItem>(`/api/intelligence/items/${id}/dismiss`, { reason: reason ?? null }),
+  restore: (id: string) => api.post<IntelligenceItem>(`/api/intelligence/items/${id}/restore`),
+};
+
+// --- Status Board (read-side; the write path lives on opportunitiesApi/
+// intelligenceItemsApi's status-board-sync actions, unchanged) ------------------------
+export interface StatusBoardListParams {
+  [key: string]: string | number | boolean | undefined;
+  filter?: StatusBoardFilterName;
+  client?: string;
+  location?: string;
+  sort?: StatusBoardSortField;
+  order?: "asc" | "desc";
+}
+
+export const statusBoardApi = {
+  list: (params: StatusBoardListParams = {}) =>
+    api.get<StatusBoardListResponse>(`/api/status-board/rows${buildQuery(params)}`),
+  refresh: () => api.post<StatusBoardListResponse>("/api/status-board/refresh"),
 };
 
 // --- Settings -----------------------------------------------------------------------

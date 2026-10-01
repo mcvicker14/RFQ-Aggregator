@@ -27,7 +27,18 @@ import { SampleDataBadge, IntelligenceCategoryBadge, INTELLIGENCE_CATEGORY_LABEL
 import { FilterChip } from "@/components/ui/filter-chip";
 import { IntelligenceCard } from "@/components/discover/intelligence-card";
 import { cn, daysUntil, formatDeadline, titleCase } from "@/lib/utils";
-import type { Agency, IntelligenceItem, IntelligenceCategory, IntelligenceSource, StatusBoardSync } from "@/types";
+import type { Agency, DismissalReason, IntelligenceItem, IntelligenceCategory, IntelligenceSource, StatusBoardSync } from "@/types";
+
+const DISMISSAL_REASON_LABELS: Record<DismissalReason, string> = {
+  not_our_discipline: "Not our discipline",
+  wrong_geography: "Wrong geography",
+  construction_only: "Construction only",
+  too_small: "Too small",
+  too_large: "Too large",
+  duplicate: "Duplicate",
+  not_pursuing: "Not pursuing",
+  other: "Other",
+};
 
 const CATEGORIES: IntelligenceCategory[] = ["live_opportunity", "pre_solicitation", "early_signal", "award_intelligence"];
 
@@ -142,6 +153,9 @@ function DiscoverPageInner() {
   const [q, setQ] = useState("");
   const [category, setCategory] = useState(searchParams.get("category") ?? "");
   const [view, setView] = useState<"cards" | "table">("cards");
+  // "active" is the normal feed; "dismissed" is the recovery view — see
+  // backend/app/api/routes/intelligence_items.py's `view` param.
+  const [feedView, setFeedView] = useState<"active" | "dismissed">("active");
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [sourceId, setSourceId] = useState("");
   const [agencyId, setAgencyId] = useState("");
@@ -178,12 +192,13 @@ function DiscoverPageInner() {
     () => ({
       q: q || undefined, category: category || undefined, source_id: sourceId || undefined,
       agency_id: agencyId || undefined, state: state || undefined, include_sample_data: !hideSampleData,
+      view: feedView,
       date_status: dateStatus, sam_relevance_tier: samRelevanceTier, grants_relevance_tier: grantsRelevanceTier,
       infrastructure_relevance_tier: infrastructureRelevanceTier,
       sort_by: sortBy, sort_dir: sortDir, limit: 2000,
     }),
     [
-      q, category, sourceId, agencyId, state, hideSampleData, dateStatus,
+      q, category, sourceId, agencyId, state, hideSampleData, feedView, dateStatus,
       samRelevanceTier, grantsRelevanceTier, infrastructureRelevanceTier, sortBy, sortDir,
     ]
   );
@@ -257,6 +272,20 @@ function DiscoverPageInner() {
     await attemptStatusBoardSync(item.id, item.opportunity_id, notes);
   }
 
+  // Immediately removes the item from the current (active) feed — no need to wait for
+  // a refetch, and a future resync of any source won't bring it back (see
+  // backend/app/services/dismissal.py). Any other source's copy of the same
+  // procurement is hidden too, via its cluster, the next time the feed loads.
+  async function handleDismiss(item: IntelligenceItem, reason?: DismissalReason) {
+    await intelligenceItemsApi.dismiss(item.id, reason);
+    setItems((prev) => prev?.filter((i) => i.id !== item.id) ?? prev);
+  }
+
+  async function handleRestore(item: IntelligenceItem) {
+    await intelligenceItemsApi.restore(item.id);
+    setItems((prev) => prev?.filter((i) => i.id !== item.id) ?? prev);
+  }
+
   if (error) return <ErrorState message={error} onRetry={load} />;
 
   return (
@@ -266,9 +295,18 @@ function DiscoverPageInner() {
           <h1 className="text-xl font-semibold text-foreground">Discover</h1>
           <p className="text-sm text-muted-foreground">Market intelligence, upcoming procurements, and early signals.</p>
         </div>
-        <Link href="/sources">
-          <Button variant="outline" size="sm"><Radar className="h-4 w-4" /> Manage Sources</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Button
+            variant={feedView === "dismissed" ? "secondary" : "outline"}
+            size="sm"
+            onClick={() => setFeedView((v) => (v === "dismissed" ? "active" : "dismissed"))}
+          >
+            {feedView === "dismissed" ? "← Back to Discover" : "Dismissed"}
+          </Button>
+          <Link href="/sources">
+            <Button variant="outline" size="sm"><Radar className="h-4 w-4" /> Manage Sources</Button>
+          </Link>
+        </div>
       </div>
 
       {category && (
@@ -306,12 +344,14 @@ function DiscoverPageInner() {
 
       <div className="flex flex-wrap items-center gap-2">
         <Input placeholder="Search title, agency, location…" value={q} onChange={(e) => setQ(e.target.value)} className="max-w-xs" />
-        <Select value={dateStatus} onValueChange={setDateStatus}>
-          <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {DATE_STATUS_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-          </SelectContent>
-        </Select>
+        {feedView === "active" && (
+          <Select value={dateStatus} onValueChange={setDateStatus}>
+            <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {DATE_STATUS_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
         <Select value={sortBy} onValueChange={setSortBy}>
           <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -338,14 +378,16 @@ function DiscoverPageInner() {
           {showMoreFilters ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         </Button>
 
-        <div className="ml-auto flex rounded-md border border-border p-0.5">
-          <Button variant={view === "cards" ? "secondary" : "ghost"} size="sm" onClick={() => setView("cards")}>
-            <LayoutGrid className="h-3.5 w-3.5" /> Cards
-          </Button>
-          <Button variant={view === "table" ? "secondary" : "ghost"} size="sm" onClick={() => setView("table")}>
-            <Table2 className="h-3.5 w-3.5" /> Table
-          </Button>
-        </div>
+        {feedView === "active" && (
+          <div className="ml-auto flex rounded-md border border-border p-0.5">
+            <Button variant={view === "cards" ? "secondary" : "ghost"} size="sm" onClick={() => setView("cards")}>
+              <LayoutGrid className="h-3.5 w-3.5" /> Cards
+            </Button>
+            <Button variant={view === "table" ? "secondary" : "ghost"} size="sm" onClick={() => setView("table")}>
+              <Table2 className="h-3.5 w-3.5" /> Table
+            </Button>
+          </div>
+        )}
       </div>
 
       {showMoreFilters && (
@@ -365,42 +407,53 @@ function DiscoverPageInner() {
             </SelectContent>
           </Select>
           <Input placeholder="State (e.g. LA)" value={state} onChange={(e) => setState(e.target.value.toUpperCase())} className="w-32 bg-card" maxLength={2} />
-          <Select value={deadline} onValueChange={setDeadline}>
-            <SelectTrigger className="w-44 bg-card"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {DEADLINE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Select value={samRelevanceTier} onValueChange={setSamRelevanceTier}>
-            <SelectTrigger className="w-56 bg-card"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {SAM_RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Select value={grantsRelevanceTier} onValueChange={setGrantsRelevanceTier}>
-            <SelectTrigger className="w-56 bg-card"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {GRANTS_RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Select value={infrastructureRelevanceTier} onValueChange={setInfrastructureRelevanceTier}>
-            <SelectTrigger className="w-56 bg-card"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {INFRASTRUCTURE_RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          {feedView === "active" && (
+            <>
+              <Select value={deadline} onValueChange={setDeadline}>
+                <SelectTrigger className="w-44 bg-card"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {DEADLINE_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={samRelevanceTier} onValueChange={setSamRelevanceTier}>
+                <SelectTrigger className="w-56 bg-card"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {SAM_RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={grantsRelevanceTier} onValueChange={setGrantsRelevanceTier}>
+                <SelectTrigger className="w-56 bg-card"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {GRANTS_RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={infrastructureRelevanceTier} onValueChange={setInfrastructureRelevanceTier}>
+                <SelectTrigger className="w-56 bg-card"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {INFRASTRUCTURE_RELEVANCE_TIER_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </>
+          )}
           {sampleDataEnabled && (
             <label className="flex items-center gap-1.5 rounded-md border border-input bg-card px-3 py-1.5 text-sm text-foreground">
               <input type="checkbox" checked={hideSampleData} onChange={(e) => setHideSampleData(e.target.checked)} />
               Hide sample data
             </label>
           )}
-          <p className="basis-full text-xs text-muted-foreground">
-            SAM.gov, Grants.gov, COREWORKS RFQwire, and APEX MyBidMatch records are broadly retrieved for auditability
-            but only shown here at Relevant/Relevant Signal or above by default — widen any Relevance filter to see
-            lower-confidence matches or every record fetched. Grants.gov is an early-signal source for future
-            engineering procurement, not a list of grants to apply for.
-          </p>
+          {feedView === "active" ? (
+            <p className="basis-full text-xs text-muted-foreground">
+              SAM.gov, Grants.gov, COREWORKS RFQwire, and APEX MyBidMatch records are broadly retrieved for auditability
+              but only shown here at Relevant/Relevant Signal or above by default — widen any Relevance filter to see
+              lower-confidence matches or every record fetched. Grants.gov is an early-signal source for future
+              engineering procurement, not a list of grants to apply for.
+            </p>
+          ) : (
+            <p className="basis-full text-xs text-muted-foreground">
+              Dismissed items are never deleted and never reappear from a resync, including another source&apos;s copy
+              of the same procurement. Restore one to return it to normal Discover behavior.
+            </p>
+          )}
         </div>
       )}
 
@@ -408,10 +461,58 @@ function DiscoverPageInner() {
         <LoadingState />
       ) : filteredItems.length === 0 ? (
         <EmptyState
-          title="No intelligence yet"
-          description="Sync a source on the Intelligence Sources page, or adjust your filters."
-          action={<Link href="/sources"><Button size="sm">Go to Intelligence Sources</Button></Link>}
+          title={feedView === "dismissed" ? "Nothing dismissed" : "No intelligence yet"}
+          description={
+            feedView === "dismissed"
+              ? "Items you dismiss from Discover show up here, with a Restore option."
+              : "Sync a source on the Intelligence Sources page, or adjust your filters."
+          }
+          action={
+            feedView === "active" && (
+              <Link href="/sources"><Button size="sm">Go to Intelligence Sources</Button></Link>
+            )
+          }
         />
+      ) : feedView === "dismissed" ? (
+        <Card>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Category</TableHead>
+                <TableHead>Opportunity</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Dismissed</TableHead>
+                <TableHead>Reason</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredItems.map((item) => (
+                <TableRow key={item.id}>
+                  <TableCell><IntelligenceCategoryBadge value={item.intelligence_category} /></TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2 font-medium text-foreground">
+                      {item.title} {item.is_sample_data && <SampleDataBadge />}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {[item.agency_name, item.location_city, item.location_state].filter(Boolean).join(" · ") || "—"}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{item.source}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{formatDate(item.dismissed_at)}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {item.dismissal_reason ? DISMISSAL_REASON_LABELS[item.dismissal_reason] : "—"}
+                  </TableCell>
+                  <TableCell>
+                    <Button size="sm" variant="outline" onClick={() => handleRestore(item)}>
+                      Restore
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
       ) : view === "table" ? (
         <Card>
           <Table>
@@ -569,6 +670,7 @@ function DiscoverPageInner() {
                       item={item}
                       onTrack={handleTrack}
                       onSyncStatusBoard={handleSyncStatusBoard}
+                      onDismiss={handleDismiss}
                       statusBoardSync={syncStates[item.id]}
                     />
                   ))}

@@ -1,18 +1,20 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
-from app.models.enums import IntelligenceCategory, JurisdictionLevel, MaturityStage, SetAsideType
-from app.models.intelligence import IntelligenceItem
+from app.models.enums import DismissalReason, IntelligenceCategory, JurisdictionLevel, MaturityStage, SetAsideType
+from app.models.intelligence import IntelligenceItem, ProjectCluster
 from app.models.opportunity import StatusBoardSync
 from app.models.scoring import OpportunityScore
 from app.models.user import User
 from app.schemas.intelligence import IntelligenceItemRead
+from app.services.dismissal import ItemAlreadyTrackedError, dismiss_item, effective_is_dismissed, restore_item
 from app.services.grants_relevance_scoring import (
     HIGH_VALUE_THRESHOLD as GRANTS_HIGH_VALUE_THRESHOLD,
     POSSIBLE_SIGNAL_THRESHOLD as GRANTS_POSSIBLE_SIGNAL_THRESHOLD,
@@ -109,6 +111,20 @@ def list_intelligence_items(
     set_aside: SetAsideType | None = None,
     include_sample_data: bool = True,
     unpromoted_only: bool = Query(False, description="Only items not yet linked to an Opportunity"),
+    view: str = Query(
+        "active",
+        pattern="^(active|dismissed)$",
+        description=(
+            "'active' (default) is Discover's normal feed — excludes anything "
+            "dismissed (the item itself, or its cluster — see "
+            "app/services/dismissal.py), never excludes an already-tracked item "
+            "regardless of either flag. 'dismissed' shows ONLY dismissed items, "
+            "across every category, and skips the relevance-tier and date_status "
+            "filters entirely (a dismissed item shouldn't need to still pass a "
+            "relevance floor to appear in its own recovery view) — category/source_id/"
+            "search/state/etc. still apply if given."
+        ),
+    ),
     date_status: str = Query(
         "current",
         pattern="^(current|expired|all)$",
@@ -161,7 +177,9 @@ def list_intelligence_items(
     limit: int = Query(100, le=2000),
     offset: int = 0,
 ):
-    stmt = select(IntelligenceItem)
+    stmt = select(IntelligenceItem).outerjoin(
+        ProjectCluster, IntelligenceItem.project_cluster_id == ProjectCluster.id
+    )
     if sort_by == "pursuit_score":
         # Only joined when actually needed for ordering — every other sort avoids the
         # extra join. LEFT (not inner): an unpromoted item still has to appear, just
@@ -201,32 +219,48 @@ def list_intelligence_items(
     if unpromoted_only:
         stmt = stmt.where(IntelligenceItem.opportunity_id.is_(None))
 
-    if date_status != "all":
-        is_expired = and_(
-            IntelligenceItem.intelligence_category.in_(_EXPIRATION_ELIGIBLE_CATEGORIES),
-            IntelligenceItem.proposal_due_at.isnot(None),
-            IntelligenceItem.proposal_due_at < datetime.now(timezone.utc),
-        )
-        stmt = stmt.where(is_expired if date_status == "expired" else ~is_expired)
+    # An already-tracked item is never "dismissed" regardless of either flag — see
+    # app/services/dismissal.py's effective_is_dismissed() and module docstring on why
+    # a cluster-level dismissal must never hide a different source's actively tracked
+    # copy of the same procurement.
+    is_effectively_dismissed = and_(
+        IntelligenceItem.opportunity_id.is_(None),
+        or_(IntelligenceItem.is_dismissed.is_(True), ProjectCluster.is_dismissed.is_(True)),
+    )
+    if view == "dismissed":
+        stmt = stmt.where(is_effectively_dismissed)
+    else:
+        stmt = stmt.where(~is_effectively_dismissed)
 
-    sam_floor = _SAM_RELEVANCE_TIER_FLOOR[sam_relevance_tier]
-    if sam_floor is not None:
-        stmt = stmt.where(
-            or_(IntelligenceItem.sam_relevance_score.is_(None), IntelligenceItem.sam_relevance_score >= sam_floor)
-        )
-    grants_floor = _GRANTS_RELEVANCE_TIER_FLOOR[grants_relevance_tier]
-    if grants_floor is not None:
-        stmt = stmt.where(
-            or_(IntelligenceItem.grants_relevance_score.is_(None), IntelligenceItem.grants_relevance_score >= grants_floor)
-        )
-    infrastructure_floor = _INFRASTRUCTURE_RELEVANCE_TIER_FLOOR[infrastructure_relevance_tier]
-    if infrastructure_floor is not None:
-        stmt = stmt.where(
-            or_(
-                IntelligenceItem.infrastructure_relevance_score.is_(None),
-                IntelligenceItem.infrastructure_relevance_score >= infrastructure_floor,
+    # The Dismissed recovery view skips date_status and every relevance-tier floor —
+    # see the `view` query param's own description for why.
+    if view != "dismissed":
+        if date_status != "all":
+            is_expired = and_(
+                IntelligenceItem.intelligence_category.in_(_EXPIRATION_ELIGIBLE_CATEGORIES),
+                IntelligenceItem.proposal_due_at.isnot(None),
+                IntelligenceItem.proposal_due_at < datetime.now(timezone.utc),
             )
-        )
+            stmt = stmt.where(is_expired if date_status == "expired" else ~is_expired)
+
+        sam_floor = _SAM_RELEVANCE_TIER_FLOOR[sam_relevance_tier]
+        if sam_floor is not None:
+            stmt = stmt.where(
+                or_(IntelligenceItem.sam_relevance_score.is_(None), IntelligenceItem.sam_relevance_score >= sam_floor)
+            )
+        grants_floor = _GRANTS_RELEVANCE_TIER_FLOOR[grants_relevance_tier]
+        if grants_floor is not None:
+            stmt = stmt.where(
+                or_(IntelligenceItem.grants_relevance_score.is_(None), IntelligenceItem.grants_relevance_score >= grants_floor)
+            )
+        infrastructure_floor = _INFRASTRUCTURE_RELEVANCE_TIER_FLOOR[infrastructure_relevance_tier]
+        if infrastructure_floor is not None:
+            stmt = stmt.where(
+                or_(
+                    IntelligenceItem.infrastructure_relevance_score.is_(None),
+                    IntelligenceItem.infrastructure_relevance_score >= infrastructure_floor,
+                )
+            )
 
     column = _SORT_COLUMNS[sort_by]
     order = column.desc() if sort_dir == "desc" else column.asc()
@@ -264,8 +298,65 @@ def list_intelligence_items(
         ).scalars().all()
         sync_by_opportunity_id = {row.opportunity_id: row for row in sync_rows}
 
+    # Same pattern again: effective dismissal (item's own flag OR its cluster's — see
+    # app/services/dismissal.py) needs each returned item's cluster, which the already-
+    # applied outerjoin doesn't hand back as a loadable attribute. One batched query.
+    cluster_ids = [item.project_cluster_id for item in items if item.project_cluster_id]
+    clusters_by_id: dict = {}
+    if cluster_ids:
+        clusters_by_id = {
+            c.id: c for c in db.execute(select(ProjectCluster).where(ProjectCluster.id.in_(cluster_ids))).scalars().all()
+        }
+
     for item in items:
         item.pursuit_score = scores_by_opportunity_id.get(item.opportunity_id)
         item.status_board_sync = sync_by_opportunity_id.get(item.opportunity_id)
+        cluster = clusters_by_id.get(item.project_cluster_id)
+        is_dismissed = effective_is_dismissed(item, cluster)
+        if is_dismissed and not item.is_dismissed and cluster is not None:
+            # Hidden via its cluster, not its own row (a sibling never individually
+            # dismissed) — show the cluster's dismissal info instead of this row's own
+            # (unset) columns.
+            item.dismissed_at = cluster.dismissed_at
+            item.dismissal_reason = cluster.dismissal_reason
+        elif not is_dismissed:
+            item.dismissed_at = None
+            item.dismissal_reason = None
+        item.is_dismissed = is_dismissed
 
     return items
+
+
+class DismissRequest(BaseModel):
+    reason: DismissalReason | None = None
+
+
+@router.post("/items/{item_id}/dismiss", response_model=IntelligenceItemRead)
+def dismiss_intelligence_item(
+    item_id: UUID,
+    payload: DismissRequest = DismissRequest(),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    item = db.get(IntelligenceItem, item_id)
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Intelligence item not found.")
+    try:
+        item = dismiss_item(db, item, current.id, payload.reason)
+    except ItemAlreadyTrackedError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    cluster = db.get(ProjectCluster, item.project_cluster_id) if item.project_cluster_id else None
+    item.is_dismissed = effective_is_dismissed(item, cluster)
+    return item
+
+
+@router.post("/items/{item_id}/restore", response_model=IntelligenceItemRead)
+def restore_intelligence_item(
+    item_id: UUID, db: Session = Depends(get_db), current: User = Depends(get_current_user),
+):
+    item = db.get(IntelligenceItem, item_id)
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Intelligence item not found.")
+    item = restore_item(db, item, current.id)
+    item.is_dismissed = False
+    return item

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from app.models.enums import (
     ConnectorType,
     DedupStatus,
+    DismissalReason,
     EstimatedTimeToProcurement,
     IntelligenceCategory,
     JurisdictionLevel,
@@ -135,3 +136,12 @@ class IntelligenceItemRead(ORMModel):
     source_url: str | None
     retrieved_at: datetime
     confidence: str
+    # Effective dismissed state — item's own flag OR its cluster's (the "normalized
+    # procurement concept"), and always False for an already-tracked item regardless
+    # of either flag. Computed by the route (app/services/dismissal.py's
+    # effective_is_dismissed), not read directly off IntelligenceItem.is_dismissed, so
+    # this always matches what Discover's own list filtering shows. See
+    # app/services/dismissal.py.
+    is_dismissed: bool = False
+    dismissed_at: datetime | None = None
+    dismissal_reason: DismissalReason | None = None

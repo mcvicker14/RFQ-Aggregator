@@ -204,6 +204,21 @@ class DedupStatus(str, enum.Enum):
     CONFIRMED_SAME_PROJECT = "confirmed_same_project"
 
 
+class DismissalReason(str, enum.Enum):
+    """Optional — a human dismissing a Discover item may give no reason at all (see
+    app/services/dismissal.py). Fixed vocabulary, not free text, so Dismissed-view
+    filtering/reporting stays meaningful."""
+
+    NOT_OUR_DISCIPLINE = "not_our_discipline"
+    WRONG_GEOGRAPHY = "wrong_geography"
+    CONSTRUCTION_ONLY = "construction_only"
+    TOO_SMALL = "too_small"
+    TOO_LARGE = "too_large"
+    DUPLICATE = "duplicate"
+    NOT_PURSUING = "not_pursuing"
+    OTHER = "other"
+
+
 class EstimatedTimeToProcurement(str, enum.Enum):
     """Always displayed in the UI as a labeled estimate, never certainty."""
 
@@ -224,6 +239,7 @@ class SyncRunStatus(str, enum.Enum):
 class SyncTriggeredBy(str, enum.Enum):
     MANUAL = "manual"
     SCHEDULED = "scheduled"
+    WEBHOOK = "webhook"  # COREWORKS Apps Script push — see app/api/routes/coreworks_ingest.py
 
 
 class StatusBoardSyncStatus(str, enum.Enum):
@@ -235,3 +251,19 @@ class StatusBoardSyncStatus(str, enum.Enum):
     PENDING = "pending"
     SYNCED = "synced"
     FAILED = "failed"
+
+
+class StatusBoardMatchMethod(str, enum.Enum):
+    """How one read-back Status Board sheet row (app/services/status_board_read_sync.py)
+    was linked to an app Opportunity, in the exact preference order matching is
+    attempted — see that module's docstring. UNMATCHED means no tier found a
+    confident link; the row still displays (as "Manual Status Board Entry"), just
+    without opportunity drill-down. Only SYNC_RELATIONSHIP means this app itself
+    placed the row (an exact StatusBoardSync.sheet_row_number hit) — every other
+    value, UNMATCHED included, is "not app-originated" for display purposes."""
+
+    SYNC_RELATIONSHIP = "sync_relationship"
+    SOURCE_URL = "source_url"
+    SOLICITATION_NUMBER = "solicitation_number"
+    TITLE_CLIENT_DUE_DATE = "title_client_due_date"
+    UNMATCHED = "unmatched"
