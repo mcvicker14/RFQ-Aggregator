@@ -119,6 +119,19 @@ def _empty_raw_items(since, **filters) -> list[RawIntelligenceItem]:
 
 def _seed_and_mock(db, monkeypatch):
     seed_intelligence_sources(db)
+    # last_attempted_sync_at is runtime state seed_intelligence_sources() deliberately
+    # never overwrites on an existing row (same reason as polling_frequency_hours in
+    # test_coreworks_uses_its_own_polling_frequency_not_the_apex_clock_gate below) --
+    # this shared dev database's two real source rows carry a REAL, recent timestamp
+    # from actual manual "Sync Now" verification clicks, which is later than every
+    # fixed WINTER_CST/SUMMER_CDT test date below and would make a "never synced, due
+    # now" test scenario spuriously look "already synced today, not due." Reset to a
+    # guaranteed-clean baseline so every test in this file is independent of whatever
+    # this database's rows happen to carry already.
+    for name in SCHEDULED_SOURCE_NAMES:
+        db.execute(
+            select(IntelligenceSource).where(IntelligenceSource.name == name)
+        ).scalars().one().last_attempted_sync_at = None
     monkeypatch.setattr(get_intelligence_connector("gmail_coreworks"), "fetch", _empty_raw_items)
     monkeypatch.setattr(get_intelligence_connector("web_apex_mybidmatch"), "fetch", _empty_raw_items)
 
@@ -148,8 +161,16 @@ def test_apex_actually_runs_via_the_real_run_sync_pipeline_when_due(db, monkeypa
     apex_result = next(r for r in results if r["source"] == "APEX MyBidMatch")
     assert apex_result["ran"] is True
 
+    # Most recent run, not .one() -- this shared dev database's real APEX source row
+    # may already carry sync history from actual manual "Sync Now" activity outside
+    # this test's own transaction (same reason last_attempted_sync_at is reset above);
+    # what this test needs to confirm is only that THIS call produced a new run shaped
+    # the way the real pipeline produces one.
     run = db.execute(
-        select(IntelligenceSyncRun).where(IntelligenceSyncRun.intelligence_source_id == apex.id)
+        select(IntelligenceSyncRun)
+        .where(IntelligenceSyncRun.intelligence_source_id == apex.id)
+        .order_by(IntelligenceSyncRun.started_at.desc())
+        .limit(1)
     ).scalars().one()
     assert run.triggered_by == SyncTriggeredBy.SCHEDULED
     assert run.status == SyncRunStatus.SUCCESS

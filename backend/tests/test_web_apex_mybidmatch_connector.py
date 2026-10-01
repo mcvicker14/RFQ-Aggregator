@@ -11,6 +11,7 @@ unverified. Whoever gets real page access next should add a fixture captured fro
 live page and confirm it against these same functions.
 """
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy import select
@@ -58,7 +59,9 @@ def test_maps_full_candidate_with_agency_naics_set_aside_deadline_and_value():
     assert raw.fields["agency_name"] == "USACE New Orleans District"  # cells[2]
     assert raw.fields["naics_code"] == "541330"
     assert raw.fields["set_aside"] == SetAsideType.SMALL_BUSINESS
-    assert raw.fields["proposal_due_at"] == datetime(2026, 11, 15, tzinfo=timezone.utc)
+    # Date-only deadline -> anchored at noon UTC, not midnight (see
+    # test_date_only_deadline_preserves_the_same_calendar_date_in_central below for why).
+    assert raw.fields["proposal_due_at"] == datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
     assert raw.fields["estimated_value_high"] == 250_000.0
     assert raw.intelligence_category == IntelligenceCategory.LIVE_OPPORTUNITY
 
@@ -156,9 +159,102 @@ def test_parse_loose_date_finds_the_date_even_with_leading_text():
     # Regression: an earlier version required the WHOLE (truncated) string to be
     # exactly the date, which almost never matched on a realistic row with a
     # title/agency ahead of the date. Must search, not full-match.
-    assert _parse_loose_date("Drainage Improvements Due: 11/15/2026 more text after") == datetime(2026, 11, 15, tzinfo=timezone.utc)
-    assert _parse_loose_date("Posted 2026-09-01, response due December 3, 2026") == datetime(2026, 9, 1, tzinfo=timezone.utc)
+    assert _parse_loose_date("Drainage Improvements Due: 11/15/2026 more text after") == datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+    assert _parse_loose_date("Posted 2026-09-01, response due December 3, 2026") == datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
     assert _parse_loose_date("nothing resembling a date") is None
+
+
+# --- Production bug: a date-only deadline displayed one calendar day early ---------
+# Root cause: a date-only value ("10/07/2026") was anchored at UTC MIDNIGHT, then the
+# frontend formats it in the viewer's local timezone with no further adjustment
+# (frontend/src/lib/utils.ts formatShortDate -> `new Intl.DateTimeFormat(...).format(new
+# Date(value))`, no explicit timeZone override). Midnight UTC on Oct 7, viewed from any
+# negative-UTC-offset zone (Central is UTC-5 CDT / UTC-6 CST), falls on Oct 6 local time
+# -- the exact "October 7 source -> October 6 displayed" bug reported from a real APEX
+# Port Arthur listing. Fixed by treating a bare date (no time, no timezone in the
+# source) as naming a CALENDAR DATE, not a midnight instant -- anchored at noon UTC,
+# which lands on the same calendar date in every real-world US display timezone.
+
+CENTRAL = ZoneInfo("America/Chicago")
+
+
+def _as_central_date(value: datetime):
+    return value.astimezone(CENTRAL).date()
+
+
+def test_date_only_deadline_preserves_the_same_calendar_date_in_central():
+    # The reported production case: a bare "10/07/2026" must still read as October 7
+    # once converted to Central time for display, not October 6.
+    parsed = _parse_loose_date("Port Arthur Independent School District Due: 10/07/2026 roofing replacement")
+    assert parsed is not None
+    assert parsed.date() == date(2026, 10, 7)  # the UTC-side date itself
+    assert _as_central_date(parsed) == date(2026, 10, 7)  # and still Oct 7 once shown in Central
+
+
+def test_date_only_deadline_is_not_interpreted_as_utc_midnight():
+    # Pins the actual mechanism of the fix, not just its end result: a date-only value
+    # must NOT be midnight UTC (the buggy anchor that shifted backward once converted
+    # to a negative-UTC-offset zone).
+    parsed = _parse_loose_date("Due: 10/07/2026")
+    assert parsed.hour != 0 or parsed.minute != 0  # not midnight
+    assert parsed == datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_various_date_only_formats_all_preserve_the_source_calendar_date():
+    for text in ("Due: 10/07/2026", "Due Date: October 7, 2026", "Due: Oct 7, 2026", "Response due 2026-10-07"):
+        parsed = _parse_loose_date(text)
+        assert parsed is not None, text
+        assert _as_central_date(parsed) == date(2026, 10, 7), text
+
+
+def test_explicit_utc_timestamp_converts_correctly():
+    # A REAL timestamp (has a time-of-day and an explicit zone) names a specific
+    # instant and must be preserved/converted exactly -- not re-anchored like a
+    # date-only value.
+    parsed = _parse_loose_date("Response Date: 2026-10-07T19:00:00Z")
+    assert parsed == datetime(2026, 10, 7, 19, 0, 0, tzinfo=timezone.utc)
+    assert _as_central_date(parsed) == date(2026, 10, 7)  # 2pm Central -- comfortably same day
+
+
+def test_explicit_central_timestamp_remains_correct():
+    # 2:00 PM Central (CDT, UTC-5 in October) must round-trip to 2:00 PM Central, and
+    # to the correct absolute UTC instant -- not shifted by treating it as date-only.
+    parsed = _parse_loose_date("Response Date: 2026-10-07T14:00:00-05:00")
+    assert parsed == datetime(2026, 10, 7, 19, 0, 0, tzinfo=timezone.utc)
+    central = parsed.astimezone(CENTRAL)
+    assert (central.hour, central.minute) == (14, 0)
+    assert central.date() == date(2026, 10, 7)
+
+
+def test_explicit_central_timestamp_in_winter_cst_remains_correct():
+    # Same check in the other DST regime (CST, UTC-6 in January) -- the parser must
+    # trust the offset actually given, not assume one fixed Central offset.
+    parsed = _parse_loose_date("Response Date: 2026-01-15T08:00:00-06:00")
+    assert parsed == datetime(2026, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
+    central = parsed.astimezone(CENTRAL)
+    assert (central.hour, central.minute) == (8, 0)
+    assert central.date() == date(2026, 1, 15)
+
+
+def test_date_only_deadline_on_dst_fall_back_boundary_stays_correct():
+    # US DST ends Nov 1, 2026 (clocks fall back 2am->1am local) -- a date-only deadline
+    # landing exactly on that calendar date must still show as that date in Central.
+    parsed = _parse_loose_date("Due: 11/01/2026")
+    assert _as_central_date(parsed) == date(2026, 11, 1)
+
+
+def test_date_only_deadline_on_dst_spring_forward_boundary_stays_correct():
+    # US DST begins March 14, 2027 (clocks spring forward 2am->3am local).
+    parsed = _parse_loose_date("Due: 3/14/2027")
+    assert _as_central_date(parsed) == date(2027, 3, 14)
+
+
+def test_apex_field_mapping_preserves_date_only_deadline_through_to_raw_intelligence_item():
+    # End-to-end through the actual field-mapping function (not just the date parser in
+    # isolation) -- this is what fetch() really produces for a scraped row.
+    candidate = _candidate(row_text="Port Arthur ISD roofing replacement Due: 10/07/2026 NAICS 238160")
+    raw = _to_raw_intelligence_item(candidate, RETRIEVED_AT)
+    assert _as_central_date(raw.fields["proposal_due_at"]) == date(2026, 10, 7)
 
 
 # --- _parse_page(): structural extraction strategies --------------------------------

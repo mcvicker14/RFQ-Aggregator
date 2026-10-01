@@ -64,7 +64,16 @@ _SET_ASIDE_KEYWORDS: list[tuple[str, SetAsideType]] = [
 _NAICS_PATTERN = re.compile(r"\bNAICS\b\D{0,10}(\d{6})", re.IGNORECASE)
 _DEADLINE_LABELS = re.compile(r"(?:response|proposal|closing|due)\s*(?:date|deadline)?\s*:?\s*", re.IGNORECASE)
 _MONEY_PATTERN = re.compile(r"\$\s?([\d,]+(?:\.\d+)?)\s*(k|m|million|thousand)?", re.IGNORECASE)
-_DATE_TOKEN = re.compile(
+# A real timestamp -- date AND time, optionally with an explicit UTC offset or "Z" --
+# checked BEFORE _DATE_ONLY_TOKEN below so e.g. "2026-10-07T14:00:00-05:00" is matched
+# as the full instant it names, not just its leading "2026-10-07" date portion.
+_TIMESTAMP_TOKEN = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)\b"
+)
+# A bare calendar date -- no time-of-day, no timezone/offset -- meaning the source named
+# a DAY, not an instant. See _parse_loose_date for why this is anchored differently from
+# a real timestamp.
+_DATE_ONLY_TOKEN = re.compile(
     r"\b(\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{2}-\d{2}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\b"
 )
 
@@ -109,21 +118,51 @@ def _extract_money(text: str) -> float | None:
 
 
 def _parse_loose_date(text: str) -> datetime | None:
-    """Finds a date-shaped token anywhere in `text` (row_text realistically has a
+    """Finds a deadline-shaped token anywhere in `text` (row_text realistically has a
     title/agency/etc. ahead of the actual date, so this must search, not require the
-    whole string to be exactly the date — an earlier version passed a fixed-length
-    prefix straight to strptime, which only matched when the date happened to be the
-    very first thing in the string and nothing else was within that prefix; i.e.
-    almost never, on any real row shape)."""
-    match = _DATE_TOKEN.search(text)
-    if not match:
+    whole string to be exactly the date).
+
+    Two cases, handled differently on purpose:
+
+    1. A real TIMESTAMP -- date and time, with an explicit "Z" or numeric UTC offset
+       (e.g. "2026-10-07T19:00:00Z", "2026-10-07T14:00:00-05:00") -- names one exact
+       instant. It's parsed and converted to UTC exactly, preserving that instant.
+
+    2. A bare DATE-ONLY token -- just a calendar date, no time, no timezone (e.g.
+       "10/07/2026", "October 7, 2026") -- is the overwhelmingly common real shape for
+       a scraped bid-board deadline, and names a DAY, not an instant. Production bug:
+       this used to be anchored at UTC MIDNIGHT (`.replace(tzinfo=timezone.utc)`).
+       Midnight UTC on Oct 7, displayed in any negative-UTC-offset zone (Central is
+       UTC-5/-6), falls on Oct 6 local time -- so a source deadline of October 7
+       displayed as October 6 everywhere in the app (Discover, Source History, the
+       Port Arthur listing this was reported from). A date-only value isn't really a
+       midnight instant at all; it's anchored at NOON UTC instead, which lands within
+       the same source calendar date for every real-world US display timezone (as
+       early as ~6am Eastern DST, as late as ~2am Hawaii) without needing this
+       connector to know or care what timezone the frontend renders in.
+    """
+    ts_match = _TIMESTAMP_TOKEN.search(text)
+    if ts_match is not None:
+        candidate = ts_match.group(1).replace(" ", "T", 1)
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+
+    date_match = _DATE_ONLY_TOKEN.search(text)
+    if not date_match:
         return None
-    token = match.group(1).rstrip(",")
+    token = date_match.group(1).rstrip(",")
     for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d", "%B %d, %Y", "%b %d, %Y", "%B %d %Y", "%b %d %Y"):
         try:
-            return datetime.strptime(token, fmt).replace(tzinfo=timezone.utc)
+            naive = datetime.strptime(token, fmt)
         except ValueError:
             continue
+        return datetime(naive.year, naive.month, naive.day, 12, 0, 0, tzinfo=timezone.utc)
     return None
 
 
