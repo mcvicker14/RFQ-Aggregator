@@ -1,13 +1,24 @@
-"""Scheduling for the two sources that need it (COREWORKS RFQwire, APEX MyBidMatch) —
-the only two connectors in this app with any scheduling requirement at all. No
-scheduling infrastructure existed anywhere in this app before this (confirmed
-repo-wide: no APScheduler/celery/cron, no FastAPI startup hook, IntelligenceSource.
-polling_frequency_hours and SyncTriggeredBy.SCHEDULED both existed only as
-forward-compatible placeholders nothing ever read/used) — this module, the
+"""Scheduling for APEX MyBidMatch — the only connector still polled from inside this
+app. No scheduling infrastructure existed anywhere in this app before this was first
+built (confirmed repo-wide: no APScheduler/celery/cron, no FastAPI startup hook,
+IntelligenceSource.polling_frequency_hours and SyncTriggeredBy.SCHEDULED both existed
+only as forward-compatible placeholders nothing ever read/used) — this module, the
 scheduled-sync-check route that calls it, the in-process APScheduler job in
 app/main.py, and the GitHub Actions workflow that calls the route externally are all
-new, minimal, and scoped to exactly these two sources. See docs/DATA_INGESTION.md and
-this module's own functions for why three layers exist.
+minimal and scoped to exactly this one source. See docs/DATA_INGESTION.md and this
+module's own functions for why three layers exist.
+
+COREWORKS RFQwire was polled from here too until its retrieval transport moved to a
+Google Apps Script (see app/connectors/gmail_coreworks.py and
+google-apps-script/coreworks_sync.gs). Its "every 3 hours" automatic check is now the
+Apps Script's OWN time-driven trigger, which pushes straight to
+app/api/routes/coreworks_ingest.py without this app's scheduler asking — a second,
+backend-side 3-hour poll for the exact same source would just be a redundant, never-
+finding-anything-new check (the Apps Script already tracks what it has and hasn't sent
+via a Gmail label), so COREWORKS is deliberately excluded from SCHEDULED_SOURCE_NAMES
+rather than duplicating that scheduling decision in two places. Manual "Sync Now" for
+COREWORKS still works normally (CoreworksRfqwireConnector.fetch() pulls from the Apps
+Script on demand) — only the unattended automatic check moved.
 
 Every check here is a pure function of (current time, a source's own last_attempted_
 sync_at, its own config) — no wall-clock timer owns "is it time yet" on its own, so the
@@ -37,7 +48,7 @@ logger = logging.getLogger(__name__)
 CENTRAL_TZ = ZoneInfo("America/Chicago")  # matches status_board_sync.py's own constant
 APEX_SYNC_HOUR_LOCAL = 18  # 6:00 PM America/Chicago, any DST regime
 
-SCHEDULED_SOURCE_NAMES = ("COREWORKS RFQwire", "APEX MyBidMatch")
+SCHEDULED_SOURCE_NAMES = ("APEX MyBidMatch",)
 
 
 def should_run_apex_sync_now(now_utc: datetime, last_attempted_sync_at: datetime | None) -> bool:

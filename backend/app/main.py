@@ -12,6 +12,7 @@ from app.api.routes import (
     auth,
     companies,
     contacts,
+    coreworks_ingest,
     dashboard,
     documents,
     forecast,
@@ -25,13 +26,16 @@ from app.api.routes import (
     sample_data_cleanup,
     scheduled_sync,
     settings as settings_routes,
+    status_board,
     tasks,
     users,
     winloss,
 )
 from app.core.config import get_settings
 from app.db.session import SessionLocal, engine
+from app.services import status_board_webhook_client
 from app.services.scheduled_sync import run_due_scheduled_syncs
+from app.services.status_board_read_sync import refresh_status_board_cache
 
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
@@ -69,7 +73,30 @@ def _run_scheduled_sync_tick() -> None:
         db.close()
 
 
+def _run_status_board_cache_tick() -> None:
+    """In-process automatic Status Board refresh — every STATUS_BOARD_CACHE_TICK_
+    MINUTES while this process is awake, same "attempt always, no-op if not
+    configured" shape as _run_scheduled_sync_tick above. No external-scheduler layer
+    for this one (unlike COREWORKS/APEX): a stale cache for the few extra minutes
+    until this process next wakes from idle is low-stakes (the manual Refresh button
+    always catches it up immediately), unlike missing a COREWORKS listing entirely —
+    see app/services/scheduled_sync.py's module docstring for why that one DOES need
+    the extra layer. Does nothing if STATUS_BOARD_WEBHOOK_URL/SECRET aren't set."""
+    if not status_board_webhook_client.is_configured():
+        return
+    db = SessionLocal()
+    try:
+        state = refresh_status_board_cache(db)
+        if state.last_error:
+            logger.warning("Status Board cache tick failed: %s", state.last_error)
+    except Exception:
+        logger.exception("Status Board cache tick failed")
+    finally:
+        db.close()
+
+
 SCHEDULED_SYNC_TICK_MINUTES = 15
+STATUS_BOARD_CACHE_TICK_MINUTES = 10
 _scheduler = BackgroundScheduler()
 
 
@@ -77,6 +104,9 @@ _scheduler = BackgroundScheduler()
 async def lifespan(_app: FastAPI):
     _scheduler.add_job(
         _run_scheduled_sync_tick, "interval", minutes=SCHEDULED_SYNC_TICK_MINUTES, id="scheduled_sync_tick",
+    )
+    _scheduler.add_job(
+        _run_status_board_cache_tick, "interval", minutes=STATUS_BOARD_CACHE_TICK_MINUTES, id="status_board_cache_tick",
     )
     _scheduler.start()
     yield
@@ -117,10 +147,12 @@ for router in (
     alerts.router,
     intelligence_items.router,
     intelligence_sources.router,
+    coreworks_ingest.router,
     sample_data_audit.router,
     sample_data_cleanup.router,
     scheduled_sync.router,
     settings_routes.router,
+    status_board.router,
     winloss.router,
 ):
     app.include_router(router)

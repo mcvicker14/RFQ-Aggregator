@@ -1,9 +1,16 @@
-"""Tests for the scheduling layer that's new in this change: COREWORKS RFQwire's
-rolling polling interval and APEX MyBidMatch's daily 6:00 PM America/Chicago sync (see
-app/services/scheduled_sync.py's module docstring for the three-layer design this is
-part of — this file covers the pure decision functions, the orchestrator that applies
-them against real seeded sources, and the shared-secret-authenticated route an external
-scheduler calls).
+"""Tests for the scheduling layer: APEX MyBidMatch's daily 6:00 PM America/Chicago sync
+(see app/services/scheduled_sync.py's module docstring for the three-layer design this
+is part of — this file covers the pure decision functions, the orchestrator that
+applies them against real seeded sources, and the shared-secret-authenticated route an
+external scheduler calls).
+
+COREWORKS RFQwire used to be scheduled from here too (a rolling polling interval via
+should_run_polling_sync_now) until its automatic check moved to its own Apps Script
+time-driven trigger — see app/services/scheduled_sync.py's module docstring for why,
+and test_coreworks_is_not_backend_scheduled_apps_script_owns_its_own_trigger below for
+the regression test confirming it stays out of SCHEDULED_SOURCE_NAMES.
+should_run_polling_sync_now itself is kept and still tested below as a generic
+primitive, available to any future polling-based scheduled source.
 
 The DST-correctness tests are the reason this schedule uses zoneinfo instead of a fixed
 UTC-offset cron expression: 6:00 PM America/Chicago is UTC-6 (00:00 UTC next day) in
@@ -86,7 +93,7 @@ def test_the_same_utc_instant_is_treated_differently_depending_on_the_local_cale
     assert should_run_apex_sync_now(utc_instant, None) is True
 
 
-# --- should_run_polling_sync_now(): COREWORKS's rolling-interval gate ---------------
+# --- should_run_polling_sync_now(): generic rolling-interval gate -------------------
 
 def test_polling_with_no_frequency_configured_is_never_due():
     now = datetime.now(timezone.utc)
@@ -120,19 +127,18 @@ def _empty_raw_items(since, **filters) -> list[RawIntelligenceItem]:
 def _seed_and_mock(db, monkeypatch):
     seed_intelligence_sources(db)
     # last_attempted_sync_at is runtime state seed_intelligence_sources() deliberately
-    # never overwrites on an existing row (same reason as polling_frequency_hours in
-    # test_coreworks_uses_its_own_polling_frequency_not_the_apex_clock_gate below) --
-    # this shared dev database's two real source rows carry a REAL, recent timestamp
-    # from actual manual "Sync Now" verification clicks, which is later than every
-    # fixed WINTER_CST/SUMMER_CDT test date below and would make a "never synced, due
-    # now" test scenario spuriously look "already synced today, not due." Reset to a
-    # guaranteed-clean baseline so every test in this file is independent of whatever
-    # this database's rows happen to carry already.
+    # never overwrites on an existing row (same reason as is_enabled in
+    # test_disabled_source_is_skipped_even_when_otherwise_due below) -- this shared dev
+    # database's source rows carry a REAL, recent timestamp from actual manual
+    # "Sync Now" verification clicks, which is later than every fixed WINTER_CST/
+    # SUMMER_CDT test date below and would make a "never synced, due now" test scenario
+    # spuriously look "already synced today, not due." Reset to a guaranteed-clean
+    # baseline so every test in this file is independent of whatever this database's
+    # rows happen to carry already.
     for name in SCHEDULED_SOURCE_NAMES:
         db.execute(
             select(IntelligenceSource).where(IntelligenceSource.name == name)
         ).scalars().one().last_attempted_sync_at = None
-    monkeypatch.setattr(get_intelligence_connector("gmail_coreworks"), "fetch", _empty_raw_items)
     monkeypatch.setattr(get_intelligence_connector("web_apex_mybidmatch"), "fetch", _empty_raw_items)
 
 
@@ -140,9 +146,9 @@ def _source(db, name: str) -> IntelligenceSource:
     return db.execute(select(IntelligenceSource).where(IntelligenceSource.name == name)).scalars().one()
 
 
-def test_only_the_two_scheduled_sources_are_ever_considered(db, monkeypatch):
+def test_only_the_scheduled_source_is_ever_considered(db, monkeypatch):
     _seed_and_mock(db, monkeypatch)
-    due_now = _local(WINTER_CST, APEX_SYNC_HOUR_LOCAL, 5)  # APEX due; COREWORKS (never-run) also due
+    due_now = _local(WINTER_CST, APEX_SYNC_HOUR_LOCAL, 5)  # APEX due
 
     results = run_due_scheduled_syncs(db, now=due_now)
 
@@ -186,21 +192,23 @@ def test_apex_not_yet_due_before_6pm_local_is_skipped_with_a_reason(db, monkeypa
     assert "not due" in apex_result["reason"].lower()
 
 
-def test_coreworks_uses_its_own_polling_frequency_not_the_apex_clock_gate(db, monkeypatch):
+def test_coreworks_is_not_backend_scheduled_apps_script_owns_its_own_trigger(db, monkeypatch):
     _seed_and_mock(db, monkeypatch)
     coreworks = _source(db, "COREWORKS RFQwire")
-    # polling_frequency_hours is runtime/admin state seed_intelligence_sources()
-    # deliberately never overwrites on an existing row (see its own module docstring)
-    # — set explicitly here so this test exercises the scheduling behavior for a
-    # properly-configured row regardless of whatever this shared dev database's row
-    # happens to carry already.
+    # Never synced, with a polling_frequency_hours set — under the OLD backend-polling
+    # design this would have been immediately due (see
+    # test_polling_with_no_prior_run_is_immediately_due above). COREWORKS's automatic
+    # check now lives entirely in its Apps Script's own time-driven trigger (see
+    # app/connectors/gmail_coreworks.py and google-apps-script/coreworks_sync.gs) —
+    # this asserts the backend scheduler never touches it at all, at any time of day.
     coreworks.polling_frequency_hours = 3
+    coreworks.last_attempted_sync_at = None
     db.flush()
 
-    # COREWORKS has no 6pm gate — any time of day, with no prior run, it's due.
     results = run_due_scheduled_syncs(db, now=_local(WINTER_CST, 9, 0))
-    coreworks_result = next(r for r in results if r["source"] == "COREWORKS RFQwire")
-    assert coreworks_result["ran"] is True
+
+    assert "COREWORKS RFQwire" not in {r["source"] for r in results}
+    assert "COREWORKS RFQwire" not in SCHEDULED_SOURCE_NAMES
 
 
 def test_disabled_source_is_skipped_even_when_otherwise_due(db, monkeypatch):

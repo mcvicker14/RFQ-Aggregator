@@ -1,10 +1,15 @@
-"""COREWORKS RFQwire (Gmail) connector — fixtures below are REAL forwarded COREWORKS
-email bodies (trimmed to a representative excerpt), not invented, pulled directly from
-two actual emails in the target Gmail account. Covers every structural case the
+"""COREWORKS RFQwire connector — fixtures below are REAL forwarded COREWORKS email
+bodies (trimmed to a representative excerpt), not invented, pulled directly from two
+actual emails in the target Gmail account. Covers every structural case the
 connector's own docstring documents: multiple opportunities in one email, an addendum-
 accrual re-listing (Covington), a numbered multi-item advertisement sharing one PDF
 (LSU), a cancellation (Bogalusa), a bracketed non-cancellation note (CNO), the two
 distinct real forward-header styles, and a non-COREWORKS forward being rejected.
+
+All of this parsing logic is retrieval-transport-independent (see the module's own
+docstring) — these fixtures exercise it directly, the same way regardless of whether
+the raw message text arrived via parse_messages_to_raw_items (today's Apps Script
+transport) or the old, now-retired Gmail OAuth transport.
 """
 import pytest
 
@@ -16,8 +21,9 @@ from app.connectors.gmail_coreworks import (
     _parse_section,
     _SECTION_HEADER,
     _to_raw_intelligence_item,
+    parse_messages_to_raw_items,
 )
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 # Trimmed excerpt of the real Sept 30 2026 email (Outlook "Fw:" forward style),
 # message id 1a0f37841bf34fcc.
@@ -146,6 +152,39 @@ Subject: Your Quarterly Newsletter
 This is not a COREWORKS email at all.
 """
 
+# Representative (not a specific real email, but structurally identical to the real
+# ones above) two-state section — the user's own spec names LOUISIANA and MISSISSIPPI
+# as COREWORKS's covered region; every real fixture captured so far only happened to
+# contain Louisiana listings, so this fixture closes that gap for "multiple state
+# sections" in the explicit test list.
+TWO_STATE_SECTION_FORWARD = """Begin forwarded message:
+
+From: Ralph Fontcuberta <RFQwire@dbacoreworks.com>
+Date: September 12, 2026 at 8:00:00 AM CDT
+To: Eric McVicker <eric.mcvicker@pi-aec.com>
+Subject: COREWORKS RFQwire * 2026 September 12 (Saturday) (AM)
+
+COREWORKS RFQwire
+
+New/Revised Listings Added: 2026 September 12 (Saturday)
+
+__________________
+
+NEW & REVISED LISTINGS | 2026 September 12 (Saturday)
+
+LOUISIANA
+
+2026 October 2 (LA) Jefferson Parish; Engineering Services for Drainage Improvements (RFQ<https://jeffparish.net/documents/rfq-drainage-2026/download>)
+
+MISSISSIPPI
+
+2026 October 5 (MS) City of Gulfport; Coastal Resiliency Engineering Services (Public Notice<https://gulfport-ms.gov/documents/rfq-coastal-2026/download>)
+
+____________________________________
+
+RFQ Tracking and Form Response * Since 1992
+"""
+
 
 def _sections(body: str) -> list[tuple[str, str]]:
     """(section_date_label, section_text) pairs, mirroring fetch()'s own slicing."""
@@ -257,6 +296,27 @@ def test_numbered_subitems_get_distinct_external_ids_despite_shared_pdf():
     assert len(ids) == 2  # must NOT be treated as the same opportunity
 
 
+# --- Multiple state sections in one mailing -------------------------------------------
+
+def test_multiple_state_sections_in_one_mailing_are_both_parsed_with_correct_state():
+    _, _, body = _find_original_sender_and_body(TWO_STATE_SECTION_FORWARD)
+    listings = _all_listings(body)
+    assert len(listings) == 2
+    la_listing = next(l for l in listings if "Jefferson Parish" in l["client"])
+    ms_listing = next(l for l in listings if "Gulfport" in l["client"])
+    assert la_listing["state"] == "LA"
+    assert ms_listing["state"] == "MS"
+
+
+def test_multiple_state_sections_survive_the_full_ingest_pipeline():
+    raw_items = parse_messages_to_raw_items(
+        [{"id": "two-state-msg", "body_text": TWO_STATE_SECTION_FORWARD, "internal_date_ms": None}]
+    )
+    assert len(raw_items) == 2
+    states = {r.fields["location_state"] for r in raw_items}
+    assert states == {"LA", "MS"}
+
+
 # --- Empty "Free Parking" section -----------------------------------------------------
 
 def test_free_parking_section_yields_zero_listings_not_an_error():
@@ -310,12 +370,120 @@ def test_a_malformed_listing_does_not_prevent_mapping_others(monkeypatch):
     assert good == len(listings) - 1  # every OTHER listing still mapped successfully
 
 
-# --- Connector-level wiring ------------------------------------------------------------
+def test_parse_messages_to_raw_items_skips_one_malformed_listing_and_keeps_the_rest(monkeypatch):
+    import app.connectors.gmail_coreworks as module
+    real_to_raw = module._to_raw_intelligence_item
+
+    def flaky_to_raw(listing, *args, **kwargs):
+        if "Bogalusa" in listing["client"]:
+            raise ValueError("simulated mapping failure")
+        return real_to_raw(listing, *args, **kwargs)
+
+    monkeypatch.setattr(module, "_to_raw_intelligence_item", flaky_to_raw)
+    messages = [{"id": "m1", "body_text": REAL_OUTLOOK_FORWARD, "internal_date_ms": None}]
+    raw_items = module.parse_messages_to_raw_items(messages)
+    # 6 unique items normally (see test_parse_messages_to_raw_items_handles_a_real_
+    # multi_section_email) minus the one simulated failure -- every other listing in
+    # the same message, and the rest of the sync, is unaffected.
+    assert len(raw_items) == 5
+    assert not any("Bogalusa" in str(r.fields.get("agency_name")) for r in raw_items)
+
+
+# --- parse_messages_to_raw_items(): the shared core both retrieval paths call ---------
+# (CoreworksRfqwireConnector.fetch()'s on-demand pull, and
+# app/api/routes/coreworks_ingest.py's Apps Script push — see that module's docstring)
+
+def test_parse_messages_to_raw_items_handles_a_real_multi_section_email():
+    messages = [{"id": "gmail-msg-1", "body_text": REAL_OUTLOOK_FORWARD, "internal_date_ms": None}]
+    raw_items = parse_messages_to_raw_items(messages)
+    # 7 listings total (test_one_email_multiple_sections_multiple_opportunities), minus
+    # 1: Covington's two re-listings (Sept-18 and Sept-10 sections) share one
+    # external_id and collapse to a single RawIntelligenceItem — the same within-email
+    # dedup test_revised_listing_accumulates_addenda_across_re_listings confirms.
+    assert len(raw_items) == 6
+    assert all(isinstance(r, RawIntelligenceItem) for r in raw_items)
+    assert all(r.raw["gmail_message_id"] == "gmail-msg-1" for r in raw_items)
+
+
+def test_parse_messages_to_raw_items_skips_a_non_coreworks_message_without_raising():
+    messages = [
+        {"id": "m1", "body_text": NON_COREWORKS_FORWARD, "internal_date_ms": None},
+        {"id": "m2", "body_text": REAL_APPLE_MAIL_FORWARD, "internal_date_ms": None},
+    ]
+    raw_items = parse_messages_to_raw_items(messages)
+    assert len(raw_items) == 1  # only the real COREWORKS message's one listing
+    assert raw_items[0].raw["gmail_message_id"] == "m2"
+
+
+def test_parse_messages_to_raw_items_uses_internal_date_ms_as_received_at():
+    messages = [{"id": "m1", "body_text": REAL_APPLE_MAIL_FORWARD, "internal_date_ms": 1758812809000}]
+    raw_items = parse_messages_to_raw_items(messages)
+    assert raw_items[0].raw["received_at"] == datetime.fromtimestamp(1758812809, tz=timezone.utc).isoformat()
+
+
+def test_parse_messages_to_raw_items_handles_empty_list():
+    assert parse_messages_to_raw_items([]) == []
+
+
+# --- Connector-level wiring: now talks to the Apps Script client, not Gmail OAuth -----
 
 def test_connector_reports_not_configured_without_credentials(monkeypatch):
     from app.core.config import get_settings
-    monkeypatch.setattr(get_settings(), "GMAIL_CLIENT_ID", None)
+    monkeypatch.setattr(get_settings(), "COREWORKS_APPS_SCRIPT_URL", None)
+    monkeypatch.setattr(get_settings(), "COREWORKS_WEBHOOK_SECRET", None)
     connector = CoreworksRfqwireConnector()
     assert connector.is_configured() is False
     with pytest.raises(Exception):
-        connector.fetch(__import__("datetime").date.today())
+        connector.fetch(date.today())
+
+
+def test_connector_fetch_scans_apps_script_parses_and_marks_processed(monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "COREWORKS_APPS_SCRIPT_URL", "https://script.google.com/fake/exec")
+    monkeypatch.setattr(get_settings(), "COREWORKS_WEBHOOK_SECRET", "test-secret")
+
+    scanned_since = []
+    marked = []
+
+    def fake_scan(since):
+        scanned_since.append(since)
+        return [{"id": "m1", "body_text": REAL_APPLE_MAIL_FORWARD, "internal_date_ms": None}]
+
+    def fake_mark_processed(ids):
+        marked.extend(ids)
+
+    import app.connectors.gmail_coreworks as module
+    monkeypatch.setattr(module, "scan", fake_scan)
+    monkeypatch.setattr(module, "mark_processed", fake_mark_processed)
+
+    connector = CoreworksRfqwireConnector()
+    since = date(2026, 9, 1)
+    raw_items = connector.fetch(since)
+
+    assert scanned_since == [since]
+    assert len(raw_items) == 1
+    assert marked == ["m1"]  # only successfully-scanned messages are marked processed
+
+
+def test_connector_fetch_survives_a_mark_processed_failure(monkeypatch):
+    from app.connectors.coreworks_apps_script_client import CoreworksAppsScriptError
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "COREWORKS_APPS_SCRIPT_URL", "https://script.google.com/fake/exec")
+    monkeypatch.setattr(get_settings(), "COREWORKS_WEBHOOK_SECRET", "test-secret")
+
+    import app.connectors.gmail_coreworks as module
+    monkeypatch.setattr(
+        module, "scan",
+        lambda since: [{"id": "m1", "body_text": REAL_APPLE_MAIL_FORWARD, "internal_date_ms": None}],
+    )
+
+    def failing_mark_processed(ids):
+        raise CoreworksAppsScriptError("simulated network failure")
+
+    monkeypatch.setattr(module, "mark_processed", failing_mark_processed)
+
+    connector = CoreworksRfqwireConnector()
+    # Must NOT raise and must NOT lose the already-parsed items — see
+    # mark_processed()'s docstring: a failure here only means a harmless re-scan later.
+    raw_items = connector.fetch(date(2026, 9, 1))
+    assert len(raw_items) == 1

@@ -70,14 +70,16 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_MODEL: str = "claude-sonnet-5"
 
-    # COREWORKS RFQwire (Gmail) connector — read-only (gmail.readonly scope) access to
-    # the Gmail account that receives forwarded COREWORKS digest emails. See
-    # app/connectors/gmail_client.py and scripts/gmail_oauth_setup.py for the one-time
-    # setup that produces GMAIL_REFRESH_TOKEN; this app never sees the account's
-    # Google password, only this refresh token, generated once by the account owner.
-    GMAIL_CLIENT_ID: str | None = None
-    GMAIL_CLIENT_SECRET: str | None = None
-    GMAIL_REFRESH_TOKEN: str | None = None
+    # COREWORKS RFQwire connector — this app holds no Gmail/Google credentials of any
+    # kind. A Google Apps Script, authorized directly against the Gmail account that
+    # receives forwarded COREWORKS digest emails (not this app), does the actual
+    # searching and reads; it POSTs matching message content to this app's
+    # coreworks-ingest webhook and answers this app's own on-demand "Sync Now" calls,
+    # authenticated both ways by this shared secret in the request body (same pattern
+    # as STATUS_BOARD_WEBHOOK_SECRET below). See app/connectors/
+    # coreworks_apps_script_client.py and google-apps-script/coreworks_sync.gs.
+    COREWORKS_APPS_SCRIPT_URL: str | None = None
+    COREWORKS_WEBHOOK_SECRET: str | None = None
 
     # Scheduled-sync trigger (COREWORKS polling / APEX daily 6PM Central) — a shared
     # secret for an external scheduler (e.g. a GitHub Actions cron workflow) to call
@@ -95,6 +97,12 @@ class Settings(BaseSettings):
     # google-apps-script/status_board_sync.gs for the script these point at.
     STATUS_BOARD_WEBHOOK_URL: str | None = None
     STATUS_BOARD_WEBHOOK_SECRET: str | None = None
+    # Purely cosmetic: the actual spreadsheet's own URL (docs.google.com/spreadsheets/
+    # d/...), used only to render an "Open in Google Sheets" link on the Status Board
+    # page. Optional and separate from STATUS_BOARD_WEBHOOK_URL (the Apps Script's own
+    # /exec URL, which isn't something a person would ever want to open directly) —
+    # the link is simply omitted if this isn't set.
+    STATUS_BOARD_SHEET_URL: str | None = None
 
     # Object storage (Phase 2 — local disk is the default StorageBackend today)
     STORAGE_BACKEND: str = "local"  # "local" | "s3" | "azure_blob"

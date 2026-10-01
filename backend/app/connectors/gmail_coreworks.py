@@ -1,8 +1,19 @@
-"""COREWORKS RFQwire connector — ingests forwarded COREWORKS digest emails from the
-connected Gmail inbox (read-only, gmail.readonly scope — see gmail_client.py). Each
-email is a rolling, plaintext, multi-section digest built by hand by one person
-(Ralph Fontcuberta) as a daily/twice-daily mailing; this module's job is to turn that
-loosely-structured text back into individually normalized IntelligenceItems.
+"""COREWORKS RFQwire connector — turns forwarded COREWORKS digest emails into
+individually normalized IntelligenceItems. Each email is a rolling, plaintext,
+multi-section digest built by hand by one person (Ralph Fontcuberta) as a
+daily/twice-daily mailing; this module's job is to turn that loosely-structured text
+back into individual listings.
+
+Retrieval transport: this app holds no Gmail/Google credentials at all. A Google Apps
+Script, authorized directly against the Gmail account that receives the forwards, does
+the actual searching and sends back raw message content (plaintext body, Gmail message
+id, received timestamp) — see app/connectors/coreworks_apps_script_client.py and
+google-apps-script/coreworks_sync.gs. That script also PUSHES newly found messages
+straight to app/api/routes/coreworks_ingest.py on its own time-driven trigger, which
+calls parse_messages_to_raw_items() below directly (bypassing fetch()'s own pull, since
+the data has already arrived) — see that route for the push path. Either way, every
+byte of the parsing logic below is identical and runs only in this app, in Python: the
+script never parses a listing, it only finds and forwards whole messages.
 
 Structure verified against two REAL forwarded emails in the target Gmail account (not
 guessed) — see the project scratchpad notes this was built from for the full annotated
@@ -50,36 +61,15 @@ import logging
 import re
 from datetime import date, datetime, timezone
 
-import httpx
-
 from app.connectors.base import ConnectorNotConfiguredError, IntelligenceConnector, RawIntelligenceItem
-from app.connectors.gmail_client import (
-    GmailApiError,
-    get_access_token,
-    get_message_plaintext,
-    is_configured,
-    search_message_ids,
-)
-from app.core.config import get_settings
+from app.connectors.coreworks_apps_script_client import CoreworksAppsScriptError, is_configured, mark_processed, scan
 from app.models.enums import IntelligenceCategory
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
 SOURCE_NAME = "COREWORKS RFQwire"
 ORIGINAL_SENDER_DOMAIN = "dbacoreworks.com"
 ORIGINAL_SENDER_NAME_PATTERN = re.compile(r"ralph\s+fontcuberta", re.IGNORECASE)
-
-# Gmail search syntax, not a Python regex — matches only messages that plausibly ARE a
-# forwarded COREWORKS digest (subject pattern or the sender domain appearing anywhere
-# in the message, which it always does in the embedded forward header even though the
-# ENVELOPE sender is the forwarder). Deliberately does not use `from:` alone — the
-# envelope sender is never RFQwire@dbacoreworks.com for a forward, see module docstring
-# point 2. The real, unambiguous sender confirmation happens in Python afterward
-# against the parsed body (_find_original_sender_and_body) — this query is only a
-# coarse pre-filter so the app isn't pulling the user's entire unrelated mailbox.
-GMAIL_SEARCH_QUERY = '(subject:COREWORKS OR subject:RFQwire OR "dbacoreworks.com")'
-MAX_MESSAGES_PER_SYNC = 50
 
 _FROM_LINE = re.compile(r"^From:\s*(?P<name>.*?)\s*<(?P<email>[^<>@\s]+@[^<>\s]+)>\s*$", re.MULTILINE)
 _SUBJECT_LINE = re.compile(r"^Subject:\s*(?P<subject>.+)$", re.MULTILINE)
@@ -314,6 +304,76 @@ def _to_raw_intelligence_item(
     )
 
 
+def parse_messages_to_raw_items(messages: list[dict]) -> list[RawIntelligenceItem]:
+    """Turns raw Gmail messages (each {"id", "body_text", "internal_date_ms"} — the
+    Apps Script's scan result shape, identical to what gmail_client.py's now-retired
+    get_message_plaintext() used to return) into normalized RawIntelligenceItems. The
+    one shared core of both retrieval paths: CoreworksRfqwireConnector.fetch() below
+    (on-demand pull, via coreworks_apps_script_client.scan()) and
+    app/api/routes/coreworks_ingest.py (the Apps Script's own time-driven push) both
+    call this directly with whatever messages they have — this function never talks to
+    Gmail or Apps Script itself, it only parses text already in hand.
+
+    Independently re-confirms original-sender authenticity per message
+    (_find_original_sender_and_body) even though the Apps Script already did a coarse
+    version of the same check before sending — defense in depth, and this app's parser
+    remains the single authoritative source of truth for what's actually ingested."""
+    retrieved_at = datetime.now(timezone.utc)
+    items: dict[str, RawIntelligenceItem] = {}
+    messages_scanned = messages_confirmed = 0
+
+    for message in messages:
+        messages_scanned += 1
+        message_id = message.get("id", "<unknown>")
+
+        is_coreworks, subject, body = _find_original_sender_and_body(message.get("body_text") or "")
+        if not is_coreworks:
+            continue
+        messages_confirmed += 1
+
+        received_at = retrieved_at
+        if message.get("internal_date_ms"):
+            try:
+                received_at = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=timezone.utc)
+            except (ValueError, OSError):
+                pass
+
+        for section_match in list(_SECTION_HEADER.finditer(body)):
+            section_start = section_match.end()
+            next_header = _SECTION_HEADER.search(body, pos=section_start)
+            footer_pos = body.find(_FOOTER_MARKER, section_start)
+            section_end = min(
+                p for p in (next_header.start() if next_header else len(body),
+                            footer_pos if footer_pos != -1 else len(body))
+                if p >= section_start
+            )
+            section_text = body[section_start:section_end]
+
+            for listing in _parse_section(section_text, section_match.group("section_date")):
+                try:
+                    raw = _to_raw_intelligence_item(
+                        listing, message_id, subject or "", received_at, retrieved_at,
+                    )
+                except Exception:
+                    logger.exception(
+                        "gmail_coreworks: failed to map one listing from message %s — skipped, not fabricated",
+                        message_id,
+                    )
+                    continue
+                # Keyed by external_id: the same listing appearing in an earlier (more
+                # addenda) section of THIS email should win over an earlier-seen, less-
+                # complete occurrence — sections iterate newest-first, matching how
+                # COREWORKS itself orders them, so the FIRST occurrence seen is already
+                # the most current one.
+                items.setdefault(raw.external_id, raw)
+
+    logger.info(
+        "gmail_coreworks: parsed %d message(s), %d confirmed as COREWORKS RFQwire, %d listing(s) extracted",
+        messages_scanned, messages_confirmed, len(items),
+    )
+    return list(items.values())
+
+
 class CoreworksRfqwireConnector(IntelligenceConnector):
     key = "gmail_coreworks"
     name = SOURCE_NAME
@@ -322,74 +382,20 @@ class CoreworksRfqwireConnector(IntelligenceConnector):
     def is_configured(self) -> bool:
         return is_configured()
 
-    def fetch(self, since: date, max_messages: int = MAX_MESSAGES_PER_SYNC) -> list[RawIntelligenceItem]:
+    def fetch(self, since: date, **filters) -> list[RawIntelligenceItem]:
         if not self.is_configured():
             raise ConnectorNotConfiguredError(
-                "COREWORKS RFQwire (Gmail) integration is not configured. Set GMAIL_CLIENT_ID, "
-                "GMAIL_CLIENT_SECRET, and GMAIL_REFRESH_TOKEN (see backend/.env.example and "
-                "scripts/gmail_oauth_setup.py for the one-time setup needed)."
+                "COREWORKS RFQwire integration is not configured. Set COREWORKS_APPS_SCRIPT_URL "
+                "and COREWORKS_WEBHOOK_SECRET (see backend/.env.example and "
+                "google-apps-script/coreworks_sync.gs for the one-time Apps Script deploy)."
             )
-
-        query = f'{GMAIL_SEARCH_QUERY} after:{since.strftime("%Y/%m/%d")}'
-        retrieved_at = datetime.now(timezone.utc)
-        items: dict[str, RawIntelligenceItem] = {}
-        messages_scanned = messages_confirmed = 0
-
-        with httpx.Client(timeout=30.0) as client:
-            access_token = get_access_token(client)
-            message_ids = search_message_ids(client, access_token, query, max_results=max_messages)
-
-            for message_id in message_ids:
-                messages_scanned += 1
-                try:
-                    message = get_message_plaintext(client, access_token, message_id)
-                except GmailApiError:
-                    logger.exception("gmail_coreworks: failed to fetch message %s — skipped", message_id)
-                    continue
-
-                is_coreworks, subject, body = _find_original_sender_and_body(message["body_text"])
-                if not is_coreworks:
-                    continue
-                messages_confirmed += 1
-
-                received_at = retrieved_at
-                if message.get("internal_date_ms"):
-                    try:
-                        received_at = datetime.fromtimestamp(int(message["internal_date_ms"]) / 1000, tz=timezone.utc)
-                    except (ValueError, OSError):
-                        pass
-
-                for section_match in list(_SECTION_HEADER.finditer(body)):
-                    section_start = section_match.end()
-                    next_header = _SECTION_HEADER.search(body, pos=section_start)
-                    footer_pos = body.find(_FOOTER_MARKER, section_start)
-                    section_end = min(
-                        p for p in (next_header.start() if next_header else len(body),
-                                    footer_pos if footer_pos != -1 else len(body))
-                        if p >= section_start
-                    )
-                    section_text = body[section_start:section_end]
-
-                    for listing in _parse_section(section_text, section_match.group("section_date")):
-                        try:
-                            raw = _to_raw_intelligence_item(
-                                listing, message["id"], subject or "", received_at, retrieved_at,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "gmail_coreworks: failed to map one listing from message %s — skipped, not fabricated",
-                                message_id,
-                            )
-                            continue
-                        # Keyed by external_id: the same listing appearing in an earlier
-                        # (more addenda) section of THIS email should win over an
-                        # earlier-seen, less-complete occurrence — sections iterate
-                        # newest-first, matching how COREWORKS itself orders them, so
-                        # the FIRST occurrence seen is already the most current one.
-                        items.setdefault(raw.external_id, raw)
-
-        logger.info(
-            "gmail_coreworks: scanned %d message(s), %d confirmed as COREWORKS RFQwire, %d listing(s) extracted",
-            messages_scanned, messages_confirmed, len(items),
-        )
-        return list(items.values())
+        messages = scan(since)
+        raw_items = parse_messages_to_raw_items(messages)
+        try:
+            mark_processed([m["id"] for m in messages if m.get("id")])
+        except CoreworksAppsScriptError:
+            # Non-fatal: these messages were already fully parsed into raw_items above
+            # (nothing here is lost), they'll just be scanned — and harmlessly,
+            # idempotently re-parsed — again next time. See mark_processed()'s docstring.
+            logger.exception("gmail_coreworks: mark_processed failed — messages will be re-scanned next sync")
+        return raw_items

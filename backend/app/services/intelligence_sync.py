@@ -37,6 +37,7 @@ from app.models.opportunity import Opportunity, OpportunitySource
 from app.models.pipeline import PipelineStage
 from app.services.activities import log_activity
 from app.services.dedup import find_and_cluster_candidates
+from app.services.dismissal import sync_cluster_dismissal_state
 from app.services.early_signal_scoring import calculate_early_signal_score
 from app.services.grants_relevance_scoring import calculate_grants_relevance_score
 from app.services.infrastructure_relevance_scoring import calculate_infrastructure_relevance_score
@@ -129,10 +130,18 @@ def promote_intelligence_item(db: Session, item: IntelligenceItem) -> tuple[Oppo
     the SAME mechanism for any two sources, not something special-cased to APEX/SAM by
     name. A human's reject_cluster() call (dedup.py) detaches an item from its cluster
     first, which is exactly what makes it independently promotable again afterward.
+
+    Also no-op for a dismissed item (item.is_dismissed, or its cluster's — see
+    app/services/dismissal.py, called just before this in run_sync()'s per-item loop)
+    -- a user said "not interested," so a later resync must never silently turn that
+    same item into a newly-tracked pursuit. Restoring it (dismissal.restore_item)
+    clears this, and the item's next natural sync is promotable again as normal.
     """
     if item.intelligence_category not in PROMOTABLE_CATEGORIES:
         return None, False
     if item.sam_relevance_score is not None and item.sam_relevance_score < RELEVANT_THRESHOLD:
+        return None, False
+    if item.is_dismissed:
         return None, False
 
     sibling = _promoted_cluster_sibling(db, item)
@@ -317,27 +326,15 @@ def _upsert_intelligence_item(db: Session, source: IntelligenceSource, raw) -> t
     return existing, False
 
 
-def run_sync(
-    db: Session,
-    source: IntelligenceSource,
-    triggered_by: SyncTriggeredBy,
-    triggered_by_user_id=None,
-    since_days: int = DEFAULT_SINCE_DAYS,
+def _start_sync_run(
+    db: Session, source: IntelligenceSource, triggered_by: SyncTriggeredBy, triggered_by_user_id=None,
 ) -> IntelligenceSyncRun:
-    """Never raises past this point for a connector/fetch/per-item failure — a failing
-    source must not crash 'sync all enabled sources'. Does raise SyncAlreadyRunningError
-    (caller's job to turn into a 409) and ValueError if the source has no connector
-    registered (caller's job to turn into a 400 — the UI shouldn't offer Sync for such
-    a source in the first place)."""
-    if source.connector_key is None:
-        raise ValueError(f"'{source.name}' has no connector implemented yet — nothing to sync.")
-    try:
-        connector = get_intelligence_connector(source.connector_key)
-    except KeyError as exc:
-        # Same category of problem as connector_key being None from the caller's
-        # perspective (a source that isn't wired up yet) — one exception type for it.
-        raise ValueError(f"'{source.name}' has no connector implemented yet — nothing to sync.") from exc
-
+    """Concurrency guard + IntelligenceSyncRun creation, shared by both ways a sync can
+    start: run_sync()'s own connector.fetch(since) pull, and ingest_pushed_items()'s
+    push path (a connector whose transport delivers already-fetched raw items instead
+    of being pulled from — currently only COREWORKS RFQwire's Apps Script webhook, see
+    app/api/routes/coreworks_ingest.py). Raises SyncAlreadyRunningError exactly as
+    run_sync() always has — caller's job to turn into a 409."""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=CONCURRENCY_GUARD_MINUTES)
     already_running = db.execute(
         select(IntelligenceSyncRun).where(
@@ -363,15 +360,50 @@ def run_sync(
     source.last_attempted_sync_at = run.started_at
     db.commit()
     db.refresh(run)
+    return run
+
+
+def _fail_run(
+    db: Session, source: IntelligenceSource, run: IntelligenceSyncRun,
+    error_detail: str, health_status: SourceHealthStatus,
+) -> IntelligenceSyncRun:
+    run.status = SyncRunStatus.FAILURE
+    run.error_detail = error_detail
+    run.finished_at = datetime.now(timezone.utc)
+    source.health_status = health_status
+    source.last_error = run.error_detail
+    db.commit()
+    return run
+
+
+def run_sync(
+    db: Session,
+    source: IntelligenceSource,
+    triggered_by: SyncTriggeredBy,
+    triggered_by_user_id=None,
+    since_days: int = DEFAULT_SINCE_DAYS,
+) -> IntelligenceSyncRun:
+    """Never raises past this point for a connector/fetch/per-item failure — a failing
+    source must not crash 'sync all enabled sources'. Does raise SyncAlreadyRunningError
+    (caller's job to turn into a 409) and ValueError if the source has no connector
+    registered (caller's job to turn into a 400 — the UI shouldn't offer Sync for such
+    a source in the first place)."""
+    if source.connector_key is None:
+        raise ValueError(f"'{source.name}' has no connector implemented yet — nothing to sync.")
+    try:
+        connector = get_intelligence_connector(source.connector_key)
+    except KeyError as exc:
+        # Same category of problem as connector_key being None from the caller's
+        # perspective (a source that isn't wired up yet) — one exception type for it.
+        raise ValueError(f"'{source.name}' has no connector implemented yet — nothing to sync.") from exc
+
+    run = _start_sync_run(db, source, triggered_by, triggered_by_user_id)
 
     if not connector.is_configured():
-        run.status = SyncRunStatus.FAILURE
-        run.error_detail = "Connector is not configured (missing credentials)."
-        run.finished_at = datetime.now(timezone.utc)
-        source.health_status = SourceHealthStatus.NEEDS_CONFIGURATION
-        source.last_error = run.error_detail
-        db.commit()
-        return run
+        return _fail_run(
+            db, source, run, "Connector is not configured (missing credentials).",
+            SourceHealthStatus.NEEDS_CONFIGURATION,
+        )
 
     try:
         raw_items = connector.fetch(date.today() - timedelta(days=since_days))
@@ -382,14 +414,28 @@ def run_sync(
         run_diagnostics = getattr(connector, "last_run_diagnostics", None)
     except Exception as exc:
         logger.exception("Sync failed for source '%s'", source.name)
-        run.status = SyncRunStatus.FAILURE
-        run.error_detail = str(exc)[:2000]
-        run.finished_at = datetime.now(timezone.utc)
-        source.health_status = SourceHealthStatus.FAILING
-        source.last_error = run.error_detail
-        db.commit()
-        return run
+        return _fail_run(db, source, run, str(exc)[:2000], SourceHealthStatus.FAILING)
 
+    return _process_fetched_items(db, source, run, raw_items, run_diagnostics)
+
+
+def ingest_pushed_items(db: Session, source: IntelligenceSource, raw_items: list) -> IntelligenceSyncRun:
+    """Entry point for a connector whose transport PUSHES already-fetched raw items
+    instead of being pulled from via connector.fetch(since) inside run_sync() —
+    currently only COREWORKS RFQwire's Apps Script time-driven trigger, which POSTs
+    newly found messages to app/api/routes/coreworks_ingest.py without the backend
+    asking first. That route parses the pushed messages
+    (gmail_coreworks.parse_messages_to_raw_items) and calls this function. Shares
+    run_sync()'s exact concurrency guard (_start_sync_run) and per-item processing/
+    scoring/commit/diagnostics logic (_process_fetched_items) — only the fetch step
+    differs: the data already arrived in the request instead of being fetched here."""
+    run = _start_sync_run(db, source, SyncTriggeredBy.WEBHOOK)
+    return _process_fetched_items(db, source, run, raw_items)
+
+
+def _process_fetched_items(
+    db: Session, source: IntelligenceSource, run: IntelligenceSyncRun, raw_items: list, run_diagnostics: dict | None = None,
+) -> IntelligenceSyncRun:
     fetched = created = updated = deduplicated = errored = 0
     item_errors: list[dict] = []
     for raw in raw_items:
@@ -402,6 +448,11 @@ def run_sync(
             # sibling that's already promoted is visible to promote_intelligence_item()
             # below — see that function's cluster-aware-attach docstring.
             find_and_cluster_candidates(db, item)
+            # Right after clustering, before promotion: a newly-clustered item must
+            # reflect its cluster's existing dismissal (or vice versa) before
+            # promote_intelligence_item() decides whether to promote it — see
+            # app/services/dismissal.py.
+            sync_cluster_dismissal_state(db, item)
             _, attached_to_sibling = promote_intelligence_item(db, item)
             calculate_early_signal_score(db, item)
             calculate_grants_relevance_score(item)  # no promotion gate needed — EARLY_SIGNAL is never promotable

@@ -74,9 +74,11 @@ SOURCES: list[dict] = [
         jurisdiction_level=REGIONAL, geographic_coverage="Louisiana, Mississippi",
         source_url="https://rfq.dbacoreworks.com", connector_type=EMAIL, connector_key="gmail_coreworks",
         requires_auth=True,
-        auth_notes="Read-only Gmail API access (gmail.readonly scope) to the mailbox that receives "
-                    "forwarded COREWORKS digest emails — see app/connectors/gmail_client.py and "
-                    "scripts/gmail_oauth_setup.py for the one-time OAuth setup required.",
+        auth_notes="No Gmail/Google credentials in this app. A Google Apps Script, authorized "
+                    "directly against the Gmail account that receives forwarded COREWORKS digest "
+                    "emails, finds and sends matching message content to this app over a shared-secret "
+                    "webhook — see app/connectors/coreworks_apps_script_client.py and "
+                    "google-apps-script/coreworks_sync.gs for the one-time Apps Script deploy required.",
         default_intelligence_category=LIVE,
         notes="Regional A/E RFQ digest covering Louisiana and Mississippi, hand-compiled by COREWORKS "
               "and received as forwarded emails, not a published feed/API.",
