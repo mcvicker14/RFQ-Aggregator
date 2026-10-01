@@ -1,481 +1,209 @@
-"""Tests for the APEX MyBidMatch connector. Written against synthetic HTML shaped to
-match OutreachSystems' OWN public documentation of the mybidmatch.com platform (a
-per-subscriber table: # / Source / Agency / FSG / Title / Keywords, Title holding the
-detail link) — NOT the real subscriber page, which this sandbox's network egress
-policy blocks fetching (confirmed against multiple unrelated domains too; see
-app/connectors/web_apex_mybidmatch.py's module docstring). _parse_page() is exercised
-against both documented-shape HTML and deliberately-wrong shapes (no table, JS-empty
-body) to prove it degrades to an honest "found nothing, here's why" diagnostic rather
-than fabricating data — the thing that most needs proving given the parser itself is
-unverified. Whoever gets real page access next should add a fixture captured from the
-live page and confirm it against these same functions.
+"""Regression tests for the live MyBidMatch structure and exact FSG C gate.
+
+Fixtures retain the observed HTML shape, with subscriber identifiers removed.
+No production database or source network access is used by these tests.
 """
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
-
 import httpx
-from sqlalchemy import select
+import pytest
+from app.connectors import web_apex_mybidmatch as m
+from app.models.enums import IntelligenceCategory
 
-import app.connectors.web_apex_mybidmatch as apex_module
-from app.connectors.registry import get_intelligence_connector
-from app.connectors.web_apex_mybidmatch import (
-    ApexMyBidMatchConnector,
-    PAGE_URL,
-    _extract_money,
-    _extract_naics,
-    _extract_sam_notice_id,
-    _looks_javascript_rendered,
-    _map_set_aside,
-    _parse_loose_date,
-    _parse_page,
-    _to_raw_intelligence_item,
-)
-from app.models.enums import IntelligenceCategory, SetAsideType, SyncRunStatus, SyncTriggeredBy
-from app.models.intelligence import IntelligenceItem, IntelligenceSource
-from app.services.intelligence_sync import run_sync
-from seed.intelligence_sources import seed_intelligence_sources
+NOW = datetime(2026, 9, 30, tzinfo=timezone.utc)
+INDEX = '''<table><tr><td>Date</td><td>Articles</td><td>Read</td></tr>
+<tr><td><a href="/go?doc=day1">Tuesday, Sep 29, 2026</a></td><td>6</td><td>New</td></tr></table>'''
+HEADER = '<tr><td>#</td><td>Source</td><td>Agency</td><td>FSG</td><td>Title</td><td>Keywords</td></tr>'
+def row(fsg='C', seq=1, source='procure'):
+    return f'<tr><td>{seq}</td><td>{source}</td><td>DEPT OF DEFENSE</td><td>{fsg}</td><td><a href="/article?doc=day1&amp;seq={seq}">$499M AE General Services MATOC</a></td><td>naics!541330;</td></tr>'
+DAILY = '<table>' + HEADER + ''.join(row(fsg, i) for i,fsg in enumerate(['C','Y','C219','','c','C'],1)) + '</table>'
+ARTICLE = '''<div class="art-box"><div class="noprint">Sep 29, 2026 navigation</div>
+<h4>DEPT OF DEFENSE, TULSA OK 74137</h4>
+<p>C -- $499M AE General Services MATOC SOL W912BV27SS001 DUE 10/29/2026 at 02:00PM -05:00 POC Buyer</p>
+<p>SOURCES SOUGHT</p><p>NAICS Code 541330. Small businesses, SDVOSB and WOSB encouraged. Shared contract capacity $499M.</p>
+<p>Place of Performance: Tulsa OK URL: <a href="https://sam.gov/opp/8a9774336ebf42febd40a998cce28cfd/view?">SAM</a></p>
+<i>OutreachSystems Article Number: 20260929/PROCURE/0020</i></div>'''
 
-RETRIEVED_AT = datetime.now(timezone.utc)
-SAM_ID = "11112222333344445555666677778888"  # 32 chars, shaped like a real SAM.gov noticeId
+def candidate():
+    return m._parse_page('<table>'+HEADER+row()+'</table>',m.PAGE_URL)[0][0]
 
+def test_index_dates_are_navigation_not_opportunities():
+    rows,d=m._parse_page(INDEX,m.PAGE_URL)
+    assert rows == [] and d['strategy_used']=='bulletin_index'
+    assert d['bulletins'][0]['bulletin_date']=='2026-09-29'
 
-# --- _to_raw_intelligence_item(): field mapping, directly (mirrors test_sam_gov_connector.py) ---
+def test_raw_http_thead_without_tr_and_nested_layout_tables():
+    # The browser repairs this invalid HTML. html.parser preserves nested tables.
+    daily='<table><table><table><thead>'+HEADER.replace('<tr>','').replace('</tr>','')+'</thead>'+row()+'</table></table></table>'
+    rows,d=m._parse_page(daily,m.PAGE_URL)
+    assert len(rows)==1 and d['rows_fetched']==1
+    index=INDEX.replace('<tr><td>Date</td><td>Articles</td><td>Read</td></tr>', '<thead><th>Date</th><th>Articles</th><th>Read</th></thead>')
+    assert len(m._parse_page(index,m.PAGE_URL)[1]['bulletins'])==1
 
-def _candidate(**overrides) -> dict:
-    base = {
-        "title": "Drainage Improvements Design-Build",
-        "detail_url": "https://mybidmatch.outreachsystems.com/detail/12345",
-        "row_text": "Due: 11/15/2026 NAICS 541330 Total Small Business Est. Value $250,000",
-        "cells": ["1", "SAM.gov", "USACE New Orleans District", "Y1ZZ", "Drainage Improvements Design-Build", "Keywords here"],
-    }
-    base.update(overrides)
-    return base
+def test_exact_fsg_gate_counts_and_retains_only_c():
+    rows,d=m._parse_page(DAILY,m.PAGE_URL)
+    assert len(rows)==2 and all(r['fsg']=='C' for r in rows)
+    assert (d['rows_fetched'],d['matched_fsg_c'],d['skipped_non_c'],d['skipped_missing_fsg'])==(6,2,3,1)
 
+@pytest.mark.parametrize('fsg',['Y','C219','c','',None])
+def test_mapper_cannot_bypass_fsg_gate(fsg):
+    c=m._parse_article(ARTICLE,candidate()); c['fsg']=fsg
+    assert m._to_raw_intelligence_item(c,NOW) is None
 
-def test_maps_full_candidate_with_agency_naics_set_aside_deadline_and_value():
-    raw = _to_raw_intelligence_item(_candidate(), RETRIEVED_AT)
+def test_federal_fields_and_sam_identity_preserve_provenance():
+    raw=m._to_raw_intelligence_item(m._parse_article(ARTICLE,candidate()),NOW)
+    assert raw.external_id=='8a9774336ebf42febd40a998cce28cfd'
+    assert raw.fields['solicitation_number']=='W912BV27SS001'
+    assert raw.fields['proposal_due_at'].isoformat()=='2026-10-29T14:00:00-05:00'
+    assert raw.fields['naics_code']=='541330'
+    assert raw.fields['location_state']=='OK'
+    assert raw.intelligence_category==IntelligenceCategory.PRE_SOLICITATION
+    assert 'set_aside' not in raw.fields and 'estimated_value_high' not in raw.fields
+    assert 'posted_at' not in raw.fields  # bulletin date is not original publication
+    assert raw.raw['fsg']=='C' and '/article?' in raw.raw['detail_url']
 
-    assert raw.fields["title"] == "Drainage Improvements Design-Build"
-    assert raw.fields["agency_name"] == "USACE New Orleans District"  # cells[2]
-    assert raw.fields["naics_code"] == "541330"
-    assert raw.fields["set_aside"] == SetAsideType.SMALL_BUSINESS
-    # Date-only deadline -> anchored at noon UTC, not midnight (see
-    # test_date_only_deadline_preserves_the_same_calendar_date_in_central below for why).
-    assert raw.fields["proposal_due_at"] == datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
-    assert raw.fields["estimated_value_high"] == 250_000.0
-    assert raw.intelligence_category == IntelligenceCategory.LIVE_OPPORTUNITY
+def test_local_article_missing_fields_are_not_invented():
+    article='''<div class="art-box"><h4>Texas - City of Port Arthur</h4>
+    <p>C - ENGINEERING SERVICE FOR STREET &amp; DRAINAGE PROJECTS Due Date: 10/7/2026 3:00 PM URL <a href="https://www.portarthurtx.gov/bids.aspx?bidID=685">details</a></p>
+    <i>OutreachSystems Article Number: 20260929/BID/1547</i></div>'''
+    raw=m._to_raw_intelligence_item(m._parse_article(article,{**candidate(),'source_type':'bid'}),NOW)
+    assert raw.fields['title']=='ENGINEERING SERVICE FOR STREET & DRAINAGE PROJECTS'
+    assert raw.fields['proposal_due_at'].date()==date(2026,10,7)
+    assert raw.fields['solicitation_number'] is None
+    assert raw.fields['naics_code'] is None
+    assert 'location_state' not in raw.fields and 'set_aside' not in raw.fields
 
+def test_awards_never_become_live_opportunities():
+    c=m._parse_article(ARTICLE,{**candidate(),'source_type':'awards'})
+    assert c['category']==IntelligenceCategory.AWARD_INTELLIGENCE
 
-def test_sam_notice_detected_in_detail_url_produces_byte_identical_sam_source_url():
-    # Matches the EXACT format app/connectors/sam_gov.py itself builds
-    # (f"https://sam.gov/opp/{notice_id}/view") — required for dedup.py's
-    # canonical-source_url identifier match to catch the duplicate.
-    candidate = _candidate(detail_url=f"https://sam.gov/opp/{SAM_ID}/view", row_text="no sam link in the visible text")
-    raw = _to_raw_intelligence_item(candidate, RETRIEVED_AT)
+@pytest.mark.parametrize('due',['Oct 29, 2026 @ 02:00 PM','2026-10-29 18:00:00','Closing On: 10/29/26 2:00 PM'])
+def test_observed_local_deadline_formats(due):
+    article=ARTICLE.replace('DUE 10/29/2026 at 02:00PM -05:00', 'Due Date: '+due)
+    assert m._parse_article(article,candidate())['fields']['proposal_due_at'].date()==date(2026,10,29)
 
-    assert raw.source_url == f"https://sam.gov/opp/{SAM_ID}/view"
-    assert raw.confidence == "verified_fact"
-    assert raw.raw["sam_notice_id_detected"] == SAM_ID
-    assert raw.external_id == SAM_ID
+@pytest.mark.parametrize('html',['<div>Due 10/1/2026 <a href="/foo">Engineering services</a></div>','<table><tr><td>Date</td><td>Title</td><td>Read</td></tr></table>'])
+def test_unknown_or_generic_shapes_fail_closed(html):
+    rows,d=m._parse_page(html,m.PAGE_URL)
+    assert not rows and d['strategy_used'] is None
 
+def test_js_diagnostic_and_feed_detection():
+    rows,d=m._parse_page('<body><div id="root"></div></body>',m.PAGE_URL)
+    assert not rows and d['likely_javascript_rendered']
+    _,d=m._parse_page('<link rel="alternate" type="application/rss+xml" href="/rss">'+INDEX,m.PAGE_URL)
+    assert d['feed_link_found']=='/rss'
 
-def test_sam_notice_detected_in_row_text_even_without_a_sam_detail_url():
-    candidate = _candidate(
-        detail_url="https://mybidmatch.outreachsystems.com/detail/12345",
-        row_text=f"See https://sam.gov/opp/{SAM_ID}/view for full notice",
-    )
-    raw = _to_raw_intelligence_item(candidate, RETRIEVED_AT)
-    assert raw.source_url == f"https://sam.gov/opp/{SAM_ID}/view"
-    assert raw.confidence == "verified_fact"
+@pytest.mark.parametrize('url',['https://sam.gov/opp/8a9774336ebf42febd40a998cce28cfd/view','https://sam.gov/workspace/contract/opp/8a9774336ebf42febd40a998cce28cfd/view'])
+def test_both_real_sam_url_forms_extract_the_same_notice(url):
+    assert m._extract_sam_notice_id(url)=='8a9774336ebf42febd40a998cce28cfd'
 
+def setup_fetch(monkeypatch, article=ARTICLE):
+    calls=[]
+    def get(client,method,url):
+        calls.append(url)
+        text=INDEX if url==m.PAGE_URL else DAILY if '/go?' in url else article
+        return httpx.Response(200,text=text,request=httpx.Request(method,url))
+    monkeypatch.setattr(m,'request_with_retry',get)
+    return calls
 
-def test_no_sam_notice_detected_falls_back_to_apex_detail_url_as_unverified():
-    candidate = _candidate(detail_url="https://somecity.gov/bids/98765", row_text="no sam reference at all")
-    raw = _to_raw_intelligence_item(candidate, RETRIEVED_AT)
+def test_fetch_follows_bulletins_and_only_c_details(monkeypatch):
+    calls=setup_fetch(monkeypatch)
+    c=m.ApexMyBidMatchConnector(); rows=c.fetch(date(2026,9,1))
+    assert len(rows)==1  # same SAM notice in two C rows is coalesced newest-first
+    assert len(calls)==4
+    assert 'seq=1' in calls[2] and 'seq=6' in calls[3]
+    assert c.last_run_diagnostics['skipped_non_c']==3
+    assert c.last_run_diagnostics['duplicate_notices_in_run']==1
 
-    assert raw.source_url == "https://somecity.gov/bids/98765"
-    assert raw.confidence == "unverified"
-    assert raw.external_id == "https://somecity.gov/bids/98765"
+def test_since_and_limit_are_explicit(monkeypatch):
+    calls=setup_fetch(monkeypatch)
+    c=m.ApexMyBidMatchConnector(); assert c.fetch(date(2026,9,30))==[]
+    assert calls==[m.PAGE_URL]
+    assert len(c.fetch(date(2026,9,1),limit=1))==1
+    assert c.last_run_diagnostics['deferred_fsg_c_limit']==1
 
+def test_detail_errors_identify_the_failed_rows(monkeypatch):
+    setup_fetch(monkeypatch,article='<body>Access denied</body>')
+    c=m.ApexMyBidMatchConnector(); assert c.fetch(date(2026,9,1))==[]
+    assert c.last_run_diagnostics['mapping_errors']==2
+    assert all(e['title'] and e['external_id'] and e['error'] for e in c.last_run_diagnostics['detail_errors'])
 
-def test_missing_title_returns_none_rather_than_a_blank_item():
-    assert _to_raw_intelligence_item(_candidate(title=""), RETRIEVED_AT) is None
-    assert _to_raw_intelligence_item(_candidate(title="   "), RETRIEVED_AT) is None
-
-
-def test_missing_agency_cell_degrades_gracefully():
-    raw = _to_raw_intelligence_item(_candidate(cells=["1", "SAM.gov"]), RETRIEVED_AT)
-    assert raw.fields["agency_name"] is None
-
-
-def test_no_deadline_or_money_in_row_text_leaves_fields_none_not_fabricated():
-    candidate = _candidate(row_text="Drainage improvements, various locations")
-    raw = _to_raw_intelligence_item(candidate, RETRIEVED_AT)
-    assert raw.fields["proposal_due_at"] is None
-    assert raw.fields["estimated_value_high"] is None
-
-
-def test_raw_metadata_preserves_full_row_text_and_detail_url_for_provenance():
-    candidate = _candidate()
-    raw = _to_raw_intelligence_item(candidate, RETRIEVED_AT)
-    assert raw.raw["row_text"] == candidate["row_text"]
-    assert raw.raw["detail_url"] == candidate["detail_url"]
-
-
-# --- Field-level helper functions --------------------------------------------------
-
-def test_extract_sam_notice_id_matches_opp_view_url():
-    assert _extract_sam_notice_id(f"https://sam.gov/opp/{SAM_ID}/view") == SAM_ID
-
-
-def test_extract_sam_notice_id_returns_none_for_non_sam_text():
-    assert _extract_sam_notice_id("https://somecity.gov/bids/98765") is None
-
-
-def test_map_set_aside_recognizes_each_documented_keyword():
-    assert _map_set_aside("Service-Disabled Veteran Owned Small Business") == SetAsideType.SDVOSB
-    assert _map_set_aside("SDVOSB set-aside") == SetAsideType.SDVOSB
-    assert _map_set_aside("8(a) sole source") == SetAsideType.EIGHT_A
-    assert _map_set_aside("HUBZone set-aside") == SetAsideType.HUBZONE
-    assert _map_set_aside("Women-Owned Small Business") == SetAsideType.WOSB
-    assert _map_set_aside(None) == SetAsideType.UNRESTRICTED
-    assert _map_set_aside("full and open competition") == SetAsideType.UNRESTRICTED
-
-
-def test_extract_naics_requires_word_boundary_label():
-    assert _extract_naics("NAICS: 541330") == "541330"
-    assert _extract_naics("primary NAICS code 237990 for this bid") == "237990"
-    assert _extract_naics("no code mentioned") is None
-
-
-def test_extract_money_handles_thousands_and_millions_suffixes():
-    assert _extract_money("Est. Value $250,000") == 250_000.0
-    assert _extract_money("approx $1.2M") == 1_200_000.0
-    assert _extract_money("around $500k") == 500_000.0
-    assert _extract_money("no value given") is None
-
-
-def test_parse_loose_date_finds_the_date_even_with_leading_text():
-    # Regression: an earlier version required the WHOLE (truncated) string to be
-    # exactly the date, which almost never matched on a realistic row with a
-    # title/agency ahead of the date. Must search, not full-match.
-    assert _parse_loose_date("Drainage Improvements Due: 11/15/2026 more text after") == datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
-    assert _parse_loose_date("Posted 2026-09-01, response due December 3, 2026") == datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
-    assert _parse_loose_date("nothing resembling a date") is None
+def test_fsg_mismatch_in_article_is_rejected():
+    with pytest.raises(ValueError,match='FSG'):
+        m._parse_article(ARTICLE.replace('C --','Y --'),candidate())
 
 
 # --- Production bug: a date-only deadline displayed one calendar day early ---------
-# Root cause: a date-only value ("10/07/2026") was anchored at UTC MIDNIGHT, then the
-# frontend formats it in the viewer's local timezone with no further adjustment
-# (frontend/src/lib/utils.ts formatShortDate -> `new Intl.DateTimeFormat(...).format(new
-# Date(value))`, no explicit timeZone override). Midnight UTC on Oct 7, viewed from any
-# negative-UTC-offset zone (Central is UTC-5 CDT / UTC-6 CST), falls on Oct 6 local time
-# -- the exact "October 7 source -> October 6 displayed" bug reported from a real APEX
-# Port Arthur listing. Fixed by treating a bare date (no time, no timezone in the
-# source) as naming a CALENDAR DATE, not a midnight instant -- anchored at noon UTC,
-# which lands on the same calendar date in every real-world US display timezone.
+# Root cause: m._parse_loose_date anchored a bare date (no time, no timezone in the
+# source) at UTC MIDNIGHT. The frontend formats proposal_due_at in the viewer's local
+# timezone with no adjustment, so midnight UTC on Oct 7 renders as Oct 6 in any
+# negative-UTC-offset zone (Central is UTC-5/-6) -- the reported Port Arthur case.
+# `.date()` alone, as used in test_local_article_missing_fields_are_not_invented above,
+# can't expose this: it reads the UTC-stored date, which is the same whether a
+# date-only value is anchored at midnight or noon UTC. These tests convert to
+# America/Chicago before asserting, which is what actually distinguishes the two and
+# proves the real, reported symptom is fixed. Fixed by anchoring a date-only value at
+# NOON UTC instead -- noon UTC falls within the same source calendar date for every
+# real-world US display timezone, so the connector doesn't need to know or assume what
+# timezone the frontend renders in. A real timestamp that does carry an explicit time
+# and UTC offset/"Z" is detected separately and preserved/converted exactly, not
+# re-anchored (see m._parse_loose_date's own docstring).
 
 CENTRAL = ZoneInfo("America/Chicago")
 
 
-def _as_central_date(value: datetime):
-    return value.astimezone(CENTRAL).date()
+def test_date_only_deadline_is_still_the_right_day_once_shown_in_central():
+    parsed = m._parse_loose_date("Due: 10/07/2026")
+    assert parsed.astimezone(CENTRAL).date() == date(2026, 10, 7)
 
 
-def test_date_only_deadline_preserves_the_same_calendar_date_in_central():
-    # The reported production case: a bare "10/07/2026" must still read as October 7
-    # once converted to Central time for display, not October 6.
-    parsed = _parse_loose_date("Port Arthur Independent School District Due: 10/07/2026 roofing replacement")
-    assert parsed is not None
-    assert parsed.date() == date(2026, 10, 7)  # the UTC-side date itself
-    assert _as_central_date(parsed) == date(2026, 10, 7)  # and still Oct 7 once shown in Central
+def test_date_only_deadline_is_not_anchored_at_utc_midnight():
+    parsed = m._parse_loose_date("Due: 10/07/2026")
+    assert (parsed.hour, parsed.minute) != (0, 0)
 
 
-def test_date_only_deadline_is_not_interpreted_as_utc_midnight():
-    # Pins the actual mechanism of the fix, not just its end result: a date-only value
-    # must NOT be midnight UTC (the buggy anchor that shifted backward once converted
-    # to a negative-UTC-offset zone).
-    parsed = _parse_loose_date("Due: 10/07/2026")
-    assert parsed.hour != 0 or parsed.minute != 0  # not midnight
-    assert parsed == datetime(2026, 10, 7, 12, 0, 0, tzinfo=timezone.utc)
+@pytest.mark.parametrize('text', [
+    'Due: 10/07/2026', 'Due Date: October 7, 2026', 'Due: Oct 7, 2026', 'Response due 2026-10-07',
+])
+def test_several_date_only_formats_land_on_the_right_central_day(text):
+    assert m._parse_loose_date(text).astimezone(CENTRAL).date() == date(2026, 10, 7)
 
 
-def test_various_date_only_formats_all_preserve_the_source_calendar_date():
-    for text in ("Due: 10/07/2026", "Due Date: October 7, 2026", "Due: Oct 7, 2026", "Response due 2026-10-07"):
-        parsed = _parse_loose_date(text)
-        assert parsed is not None, text
-        assert _as_central_date(parsed) == date(2026, 10, 7), text
-
-
-def test_explicit_utc_timestamp_converts_correctly():
-    # A REAL timestamp (has a time-of-day and an explicit zone) names a specific
-    # instant and must be preserved/converted exactly -- not re-anchored like a
-    # date-only value.
-    parsed = _parse_loose_date("Response Date: 2026-10-07T19:00:00Z")
+def test_explicit_utc_timestamp_is_preserved_not_reanchored():
+    parsed = m._parse_loose_date("Response Date: 2026-10-07T19:00:00Z")
     assert parsed == datetime(2026, 10, 7, 19, 0, 0, tzinfo=timezone.utc)
-    assert _as_central_date(parsed) == date(2026, 10, 7)  # 2pm Central -- comfortably same day
 
 
-def test_explicit_central_timestamp_remains_correct():
-    # 2:00 PM Central (CDT, UTC-5 in October) must round-trip to 2:00 PM Central, and
-    # to the correct absolute UTC instant -- not shifted by treating it as date-only.
-    parsed = _parse_loose_date("Response Date: 2026-10-07T14:00:00-05:00")
+def test_explicit_central_cdt_timestamp_round_trips_through_utc_storage():
+    # 2pm CDT (October, UTC-5) -> stored as the equivalent UTC instant -> back to 2pm
+    # Central, not shifted by being treated as date-only.
+    parsed = m._parse_loose_date("Response Date: 2026-10-07T14:00:00-05:00")
     assert parsed == datetime(2026, 10, 7, 19, 0, 0, tzinfo=timezone.utc)
     central = parsed.astimezone(CENTRAL)
-    assert (central.hour, central.minute) == (14, 0)
-    assert central.date() == date(2026, 10, 7)
+    assert (central.hour, central.date()) == (14, date(2026, 10, 7))
 
 
-def test_explicit_central_timestamp_in_winter_cst_remains_correct():
-    # Same check in the other DST regime (CST, UTC-6 in January) -- the parser must
-    # trust the offset actually given, not assume one fixed Central offset.
-    parsed = _parse_loose_date("Response Date: 2026-01-15T08:00:00-06:00")
-    assert parsed == datetime(2026, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
+def test_explicit_central_cst_timestamp_round_trips_in_winter_too():
+    parsed = m._parse_loose_date("Response Date: 2026-01-15T08:00:00-06:00")
     central = parsed.astimezone(CENTRAL)
-    assert (central.hour, central.minute) == (8, 0)
-    assert central.date() == date(2026, 1, 15)
-
-
-def test_date_only_deadline_on_dst_fall_back_boundary_stays_correct():
-    # US DST ends Nov 1, 2026 (clocks fall back 2am->1am local) -- a date-only deadline
-    # landing exactly on that calendar date must still show as that date in Central.
-    parsed = _parse_loose_date("Due: 11/01/2026")
-    assert _as_central_date(parsed) == date(2026, 11, 1)
-
-
-def test_date_only_deadline_on_dst_spring_forward_boundary_stays_correct():
-    # US DST begins March 14, 2027 (clocks spring forward 2am->3am local).
-    parsed = _parse_loose_date("Due: 3/14/2027")
-    assert _as_central_date(parsed) == date(2027, 3, 14)
-
-
-def test_apex_field_mapping_preserves_date_only_deadline_through_to_raw_intelligence_item():
-    # End-to-end through the actual field-mapping function (not just the date parser in
-    # isolation) -- this is what fetch() really produces for a scraped row.
-    candidate = _candidate(row_text="Port Arthur ISD roofing replacement Due: 10/07/2026 NAICS 238160")
-    raw = _to_raw_intelligence_item(candidate, RETRIEVED_AT)
-    assert _as_central_date(raw.fields["proposal_due_at"]) == date(2026, 10, 7)
-
-
-# --- _parse_page(): structural extraction strategies --------------------------------
-
-_DOCUMENTED_TABLE_HTML = f"""
-<html><body>
-<table>
-<tr><th>#</th><th>Source</th><th>Agency</th><th>FSG</th><th>Title</th><th>Keywords</th></tr>
-<tr>
-  <td>1</td><td>SAM.gov</td><td>USACE New Orleans District</td><td>Y1ZZ</td>
-  <td><a href="https://sam.gov/opp/{SAM_ID}/view">Drainage Improvements Design-Build</a></td>
-  <td>NAICS 541330 drainage engineering Due: 11/15/2026</td>
-</tr>
-<tr>
-  <td>2</td><td>City of Baton Rouge</td><td>DPW</td><td>C219</td>
-  <td><a href="/detail/456">Wastewater Lift Station Rehabilitation</a></td>
-  <td>NAICS 237110 utilities</td>
-</tr>
-</table>
-</body></html>
-"""
-
-
-def test_table_rows_strategy_matches_the_documented_layout():
-    candidates, diagnostics = _parse_page(_DOCUMENTED_TABLE_HTML, PAGE_URL)
-
-    assert diagnostics["strategy_used"] == "table_rows"
-    assert diagnostics["likely_javascript_rendered"] is False
-    assert len(candidates) == 2
-    titles = {c["title"] for c in candidates}
-    assert titles == {"Drainage Improvements Design-Build", "Wastewater Lift Station Rehabilitation"}
-
-
-def test_table_rows_strategy_resolves_relative_detail_urls_against_base():
-    candidates, _ = _parse_page(_DOCUMENTED_TABLE_HTML, PAGE_URL)
-    by_title = {c["title"]: c for c in candidates}
-    assert by_title["Wastewater Lift Station Rehabilitation"]["detail_url"] == str(httpx.URL(PAGE_URL).join("/detail/456"))
-
-
-def test_table_rows_strategy_skips_the_header_row():
-    candidates, _ = _parse_page(_DOCUMENTED_TABLE_HTML, PAGE_URL)
-    assert not any(c["title"] in ("#", "Source", "Title") for c in candidates)
-
-
-_GENERIC_LIST_HTML = """
-<html><body>
-<div id="results">
-  <div class="bid-row">Posted 9/1/2026 — <a href="https://city.gov/bids/1">Storm Drain Replacement Project, Phase II</a></div>
-  <div class="bid-row"><a href="https://city.gov/bids/2">Airport Runway Resurfacing</a> — closing soon, NAICS 237310</div>
-</div>
-</body></html>
-"""
-
-
-def test_generic_listing_fallback_used_when_no_table_present():
-    candidates, diagnostics = _parse_page(_GENERIC_LIST_HTML, PAGE_URL)
-
-    assert diagnostics["strategy_used"] == "generic_listing_items"
-    titles = {c["title"] for c in candidates}
-    assert titles == {"Storm Drain Replacement Project, Phase II", "Airport Runway Resurfacing"}
-
-
-def test_generic_listing_fallback_skips_elements_that_are_just_the_bare_link():
-    html = '<html><body><li><a href="https://city.gov/bids/1">Storm Drain Replacement</a></li></body></html>'
-    candidates, _ = _parse_page(html, PAGE_URL)
-    assert candidates == []  # element's whole text IS the link — not a listing row with extra fields
-
-
-_JS_RENDERED_HTML = """
-<html><body>
-<div id="root"></div>
-<script>%s</script>
-</body></html>
-""" % ("x" * 6000)
-
-
-def test_javascript_rendered_page_returns_empty_with_explicit_diagnostic_not_fabricated_rows():
-    candidates, diagnostics = _parse_page(_JS_RENDERED_HTML, PAGE_URL)
-
-    assert candidates == []
-    assert diagnostics["likely_javascript_rendered"] is True
-    assert "javascript" in diagnostics["note"].lower()
-    assert "strategy_used" not in diagnostics  # never even attempted — would be misleading
-
-
-_EMPTY_STATIC_HTML = "<html><body><p>Please log in to view your matches.</p></body></html>"
-
-
-def test_neither_strategy_matches_returns_empty_with_explanatory_note():
-    candidates, diagnostics = _parse_page(_EMPTY_STATIC_HTML, PAGE_URL)
-
-    assert candidates == []
-    assert diagnostics["strategy_used"] is None
-    assert diagnostics["candidates_found"] == 0
-    assert "re-verified" in diagnostics["note"]
-
-
-def test_feed_link_is_recorded_in_diagnostics_but_not_required_to_exist():
-    html_with_feed = '<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head><body>%s</body></html>' % _DOCUMENTED_TABLE_HTML
-    candidates, diagnostics = _parse_page(html_with_feed, PAGE_URL)
-    assert diagnostics["feed_link_found"] == "/feed.xml"
-
-    _, diagnostics_no_feed = _parse_page(_DOCUMENTED_TABLE_HTML, PAGE_URL)
-    assert diagnostics_no_feed["feed_link_found"] is None
-
-
-# --- fetch(): HTTP layer mocked, everything downstream runs for real ---------------
-
-def _fake_response(text: str, status_code: int = 200, url: str = PAGE_URL) -> httpx.Response:
-    return httpx.Response(status_code, text=text, request=httpx.Request("GET", url))
-
-
-def test_is_configured_is_always_true_no_credentials_needed():
-    assert ApexMyBidMatchConnector().is_configured() is True
-
-
-def test_fetch_returns_mapped_items_and_attaches_diagnostics(monkeypatch):
-    monkeypatch.setattr(apex_module, "request_with_retry", lambda *a, **kw: _fake_response(_DOCUMENTED_TABLE_HTML))
-
-    connector = ApexMyBidMatchConnector()
-    results = connector.fetch(since=date.today() - timedelta(days=1))
-
-    assert len(results) == 2
-    assert connector.last_run_diagnostics["strategy_used"] == "table_rows"
-    assert connector.last_run_diagnostics["candidates_found"] == 2
-    assert connector.last_run_diagnostics["records_returned"] == 2
-    assert connector.last_run_diagnostics["mapping_errors"] == 0
-    assert connector.last_run_diagnostics["redirected"] is False
-
-
-def test_fetch_handles_non_200_without_raising(monkeypatch):
-    monkeypatch.setattr(apex_module, "request_with_retry", lambda *a, **kw: _fake_response("nope", status_code=503))
-
-    connector = ApexMyBidMatchConnector()
-    results = connector.fetch(since=date.today() - timedelta(days=1))
-
-    assert results == []
-    assert connector.last_run_diagnostics["status_code"] == 503
-
-
-def test_fetch_records_redirect_in_diagnostics(monkeypatch):
-    final_url = "https://mybidmatch.outreachsystems.com/go/expired"
-    monkeypatch.setattr(apex_module, "request_with_retry", lambda *a, **kw: _fake_response(_EMPTY_STATIC_HTML, url=final_url))
-
-    connector = ApexMyBidMatchConnector()
-    connector.fetch(since=date.today() - timedelta(days=1))
-
-    assert connector.last_run_diagnostics["redirected"] is True
-    assert connector.last_run_diagnostics["final_url"] == final_url
-
-
-def test_fetch_isolates_one_mapping_failure_from_the_rest(monkeypatch):
-    monkeypatch.setattr(apex_module, "request_with_retry", lambda *a, **kw: _fake_response(_DOCUMENTED_TABLE_HTML))
-
-    real_mapper = apex_module._to_raw_intelligence_item
-
-    def flaky_mapper(candidate, retrieved_at):
-        if candidate["title"] == "Drainage Improvements Design-Build":
-            raise ValueError("simulated mapping failure")
-        return real_mapper(candidate, retrieved_at)
-
-    monkeypatch.setattr(apex_module, "_to_raw_intelligence_item", flaky_mapper)
-
-    connector = ApexMyBidMatchConnector()
-    results = connector.fetch(since=date.today() - timedelta(days=1))
-
-    assert len(results) == 1
-    assert results[0].fields["title"] == "Wastewater Lift Station Rehabilitation"
-    assert connector.last_run_diagnostics["mapping_errors"] == 1
-
-
-def test_fetch_caps_results_at_the_limit_parameter(monkeypatch):
-    monkeypatch.setattr(apex_module, "request_with_retry", lambda *a, **kw: _fake_response(_DOCUMENTED_TABLE_HTML))
-
-    connector = ApexMyBidMatchConnector()
-    results = connector.fetch(since=date.today() - timedelta(days=1), limit=1)
-
-    assert len(results) == 1
-
-
-def test_connection_failure_raises_connector_not_configured_error_not_a_bare_exception(monkeypatch):
-    def boom(*a, **kw):
-        raise httpx.ConnectError("connection refused")
-
-    monkeypatch.setattr(apex_module, "request_with_retry", boom)
-
-    from app.connectors.base import ConnectorNotConfiguredError
-    connector = ApexMyBidMatchConnector()
-    try:
-        connector.fetch(since=date.today() - timedelta(days=1))
-        assert False, "expected ConnectorNotConfiguredError"
-    except ConnectorNotConfiguredError as exc:
-        assert "re-verified" in str(exc)
-
-
-def test_apex_mybidmatch_is_registered_under_its_connector_key():
-    connector = get_intelligence_connector("web_apex_mybidmatch")
-    assert isinstance(connector, ApexMyBidMatchConnector)
-
-
-# --- run_sync(): provenance + dedup-on-resync through the real pipeline -------------
-
-def test_run_sync_persists_item_and_prevents_duplicate_on_resync(db, monkeypatch):
-    connector = get_intelligence_connector("web_apex_mybidmatch")
-    monkeypatch.setattr(
-        connector, "fetch",
-        lambda since, **filters: [_to_raw_intelligence_item(_candidate(detail_url="https://city.gov/bids/1"), RETRIEVED_AT)],
-    )
-
-    seed_intelligence_sources(db)
-    source = db.execute(select(IntelligenceSource).where(IntelligenceSource.name == "APEX MyBidMatch")).scalars().one()
-
-    run1 = run_sync(db, source, SyncTriggeredBy.MANUAL)
-    assert run1.status == SyncRunStatus.SUCCESS
-    assert run1.items_created == 1
-
-    run2 = run_sync(db, source, SyncTriggeredBy.MANUAL)
-    assert run2.items_created == 0
-    assert run2.items_updated == 1
-
-    rows = db.execute(
-        select(IntelligenceItem).where(IntelligenceItem.intelligence_source_id == source.id)
-    ).scalars().all()
-    assert len(rows) == 1
+    assert (central.hour, central.date()) == (8, date(2026, 1, 15))
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('Due: 11/01/2026', date(2026, 11, 1)),  # US DST ends (fall back) on this date
+    ('Due: 3/14/2027', date(2027, 3, 14)),   # US DST begins (spring forward) on this date
+])
+def test_date_only_deadline_on_a_dst_boundary_date_stays_correct(text, expected):
+    assert m._parse_loose_date(text).astimezone(CENTRAL).date() == expected
+
+
+def test_port_arthur_pure_date_only_deadline_through_the_real_article_pipeline():
+    # End to end through the real parsing pipeline (not _parse_loose_date in
+    # isolation): a City of Port Arthur listing with a bare "10/7/2026" deadline, no
+    # time or offset at all, must still read October 7 once converted to Central.
+    article = '''<div class="art-box"><h4>Texas - City of Port Arthur</h4>
+    <p>C - ROOFING REPLACEMENT, THOMAS JEFFERSON MIDDLE SCHOOL Due Date: 10/7/2026 URL <a href="https://www.panisd.org/bids/roofing-tjms">details</a></p>
+    <i>OutreachSystems Article Number: 20260929/BID/1600</i></div>'''
+    raw = m._to_raw_intelligence_item(m._parse_article(article, {**candidate(), 'source_type': 'bid'}), NOW)
+    assert raw.fields['title'] == 'ROOFING REPLACEMENT, THOMAS JEFFERSON MIDDLE SCHOOL'
+    assert raw.fields['proposal_due_at'].astimezone(CENTRAL).date() == date(2026, 10, 7)

@@ -191,7 +191,7 @@ def promote_intelligence_item(db: Session, item: IntelligenceItem) -> tuple[Oppo
         )
         db.add(Alert(
             user_id=None, category=AlertCategory.NEW_MATCHING_OPPORTUNITY,
-            title=f"New opportunity from {item.source}: {opp.title}",
+            title=f"New opportunity from {item.source}: {opp.title}"[:255],
             body=f"{opp.solicitation_number or 'No solicitation number yet'} — {opp.location_state or 'location TBD'}",
             opportunity_id=opp.id,
         ))
@@ -433,6 +433,8 @@ def run_sync(
     run.items_unchanged = max(0, fetched - created - updated - errored)
     run.items_deduplicated = deduplicated
     run.items_errored = errored
+    if run_diagnostics is not None:
+        run_diagnostics = {**run_diagnostics, "items_deduplicated": deduplicated}
     run.diagnostics = {**(run_diagnostics or {}), "item_errors": item_errors} if item_errors else run_diagnostics
     if errored == 0:
         run.status = SyncRunStatus.SUCCESS

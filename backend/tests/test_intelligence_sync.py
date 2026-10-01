@@ -244,7 +244,10 @@ def test_run_sync_persists_connector_diagnostics_when_reported(db, fake_connecto
 
     run = run_sync(db, source, SyncTriggeredBy.MANUAL)
 
-    assert run.diagnostics == {"retrieval": {"naics_codes_queried": ["541330"], "pages_fetched": 1}}
+    assert run.diagnostics == {
+        "retrieval": {"naics_codes_queried": ["541330"], "pages_fetched": 1},
+        "items_deduplicated": 0,
+    }
 
 
 def test_run_sync_diagnostics_is_none_for_connectors_that_do_not_report_it(db, fake_connector):

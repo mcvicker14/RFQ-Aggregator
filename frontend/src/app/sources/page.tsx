@@ -78,6 +78,7 @@ function SyncDiagnostics({ diagnostics }: { diagnostics: Record<string, unknown>
   // app/services/intelligence_sync.py's run_sync(). Rendered as its own clearly
   // labeled list — never folded into the generic JSON fallback or left as just a
   // number in the Errored count above.
+  const extraDiagnostics = Object.fromEntries(Object.entries(diagnostics).filter(([key]) => !["retrieval", "probes", "item_errors"].includes(key)));
   const itemErrors = diagnostics.item_errors as { external_id: string; title?: string | null; error: string }[] | undefined;
 
   if (!retrieval && !probes && !itemErrors?.length) {
@@ -86,6 +87,7 @@ function SyncDiagnostics({ diagnostics }: { diagnostics: Record<string, unknown>
 
   return (
     <div className="flex flex-col gap-2">
+      {Object.keys(extraDiagnostics).length > 0 && <pre className="whitespace-pre-wrap break-words text-xs">{JSON.stringify(extraDiagnostics, null, 2)}</pre>}
       {itemErrors && itemErrors.length > 0 && (
         <div>
           <div className="font-medium text-destructive">
