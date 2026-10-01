@@ -1,11 +1,18 @@
 /**
  * SOQ Status Board webhook.
  *
- * Receives one POST per "Track + Add to Status Board" click (or retry) from the
- * Principal Opportunity Intelligence backend and inserts exactly one row into this
- * spreadsheet's New RFQs section. This script is the *only* thing that ever reads or
- * writes the sheet — the backend holds no Google credentials of any kind and only
- * knows this script's Web App URL and a shared secret.
+ * Two request shapes, both POSTs:
+ *   - {secret, fields} or {secret, action:"write", fields} — one "Track + Add to
+ *     Status Board" click (or retry) from the backend; inserts exactly one row into
+ *     this spreadsheet's New RFQs section. The no-"action" shape is the original,
+ *     still-live caller (status_board_webhook_client.py) — treated identically to
+ *     action:"write" so that existing integration keeps working unchanged.
+ *   - {secret, action:"read"} — returns every current New RFQs row (including
+ *     existing manual rows never touched by this app) as JSON, for the backend's own
+ *     Status Board page to display and poll. Read-only: never writes anything.
+ * This script is the *only* thing that ever reads or writes the sheet — the backend
+ * holds no Google credentials of any kind and only knows this script's Web App URL
+ * and a shared secret.
  *
  * SETUP: paste this into Extensions > Apps Script, opened FROM WITHIN the actual SOQ
  * Status Board spreadsheet (not a standalone script project) — that binding is what
@@ -94,33 +101,43 @@ function handlePost(e) {
     return { ok: false, error: "unauthorized", message: "Missing or incorrect secret." };
   }
 
-  var fields = body.fields;
-  if (!fields || typeof fields !== "object") {
-    return { ok: false, error: "bad_request", message: "Missing 'fields' object." };
-  }
+  var action = body.action || "write"; // no action given = write, for the existing deployed caller
 
   // Serializes concurrent doPost runs against this sheet so two near-simultaneous
   // requests can never both compute the same insertion point and both write there —
   // the second one waits, then re-reads live state (and will correctly see the
-  // first one's row as a duplicate if it's for the same opportunity).
+  // first one's row as a duplicate if it's for the same opportunity). A read takes
+  // the same lock too, so it can never observe a write that's only half-applied.
   var lock = LockService.getScriptLock();
   var gotLock = lock.tryLock(10000);
   if (!gotLock) {
     return { ok: false, error: "locked", message: "Another Status Board sync is in progress — safe to retry." };
   }
   try {
+    if (action === "read") {
+      return readNewRfqsRows_();
+    }
+    var fields = body.fields;
+    if (!fields || typeof fields !== "object") {
+      return { ok: false, error: "bad_request", message: "Missing 'fields' object." };
+    }
     return syncRow(fields);
   } finally {
     lock.releaseLock();
   }
 }
 
-function syncRow(fields) {
-  var row = COLUMN_ORDER.map(function (key) {
-    var value = fields[key];
-    return value === null || value === undefined ? "" : String(value);
-  });
-
+/**
+ * Locates the New RFQs block (header row, existing data rows, the blank-row
+ * insertion point) exactly once — shared by syncRow (write) and readNewRfqsRows_
+ * (read) so the two paths can never disagree about where New RFQs starts, ends, or
+ * what counts as a structural problem. Returns { ok: true, sheet, existingRows,
+ * targetOffset, targetRow } on success, or the same { ok: false, error:
+ * "structure_error", message } shape syncRow has always returned on any structural
+ * problem — unchanged from before this was extracted, including never writing past
+ * what this search verified safe.
+ */
+function findNewRfqsBlock_() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STATUS_BOARD_SHEET_NAME);
   if (!sheet) {
     return { ok: false, error: "structure_error", message: "Tab '" + STATUS_BOARD_SHEET_NAME + "' was not found in this spreadsheet." };
@@ -165,17 +182,57 @@ function syncRow(fields) {
     };
   }
 
-  var existingRows = dataRows.slice(0, targetOffset);
-  var targetRow = NEW_RFQS_HEADER_ROW + 1 + targetOffset;
+  return {
+    ok: true,
+    sheet: sheet,
+    existingRows: dataRows.slice(0, targetOffset),
+    targetOffset: targetOffset,
+    targetRow: NEW_RFQS_HEADER_ROW + 1 + targetOffset,
+  };
+}
 
-  var duplicateRow = findExistingRow(existingRows, fields);
+function syncRow(fields) {
+  var row = COLUMN_ORDER.map(function (key) {
+    var value = fields[key];
+    return value === null || value === undefined ? "" : String(value);
+  });
+
+  var block = findNewRfqsBlock_();
+  if (!block.ok) {
+    return block;
+  }
+
+  var duplicateRow = findExistingRow(block.existingRows, fields);
   if (duplicateRow !== null) {
     return { ok: true, status: "duplicate", row: duplicateRow };
   }
 
-  sheet.insertRowBefore(targetRow);
-  sheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
-  return { ok: true, status: "inserted", row: targetRow };
+  block.sheet.insertRowBefore(block.targetRow);
+  block.sheet.getRange(block.targetRow, 1, 1, row.length).setValues([row]);
+  return { ok: true, status: "inserted", row: block.targetRow };
+}
+
+/**
+ * Returns every current New RFQs row — app-originated AND pre-existing manual rows
+ * alike, no distinction made here; the backend decides app-vs-manual display itself
+ * from its own StatusBoardSync records (see app/services/status_board_read_sync.py).
+ * Read-only: never writes, never labels, never reorders anything.
+ */
+function readNewRfqsRows_() {
+  var block = findNewRfqsBlock_();
+  if (!block.ok) {
+    return block;
+  }
+
+  var rows = block.existingRows.map(function (dataRow, i) {
+    var row = { sheet_row_number: NEW_RFQS_HEADER_ROW + 1 + i };
+    COLUMN_ORDER.forEach(function (key, idx) {
+      var value = dataRow[idx];
+      row[key] = value === null || value === undefined ? "" : String(value);
+    });
+    return row;
+  });
+  return { ok: true, rows: rows };
 }
 
 function isBlankRow(row) {
@@ -248,5 +305,14 @@ function testSyncRow() {
     submitted_y_n: "",
     link: "https://example.com/apps-script-test"
   });
+  Logger.log(JSON.stringify(result));
+}
+
+/**
+ * Manual smoke test for the read path — select and Run from the editor's toolbar.
+ * Logs every current New RFQs row without needing the backend or a network call.
+ */
+function testReadNewRfqs() {
+  var result = readNewRfqsRows_();
   Logger.log(JSON.stringify(result));
 }

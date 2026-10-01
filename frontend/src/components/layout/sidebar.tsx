@@ -8,6 +8,7 @@ import {
   Radar,
   Briefcase,
   Columns3,
+  ClipboardList,
   CheckSquare,
   Building2,
   Users2,
@@ -41,6 +42,7 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
     items: [
       { href: "/opportunities", label: "Opportunities", icon: Briefcase },
       { href: "/pipeline", label: "Pipeline", icon: Columns3 },
+      { href: "/status-board", label: "Status Board", icon: ClipboardList },
       { href: "/tasks", label: "Tasks", icon: CheckSquare },
     ],
   },

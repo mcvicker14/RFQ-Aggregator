@@ -39,11 +39,7 @@ def is_configured() -> bool:
     return bool(settings.STATUS_BOARD_WEBHOOK_URL and settings.STATUS_BOARD_WEBHOOK_SECRET)
 
 
-def sync_row(fields: dict[str, str]) -> dict:
-    """POSTs one row's fields to the Apps Script webhook and returns its parsed JSON
-    response unchanged (callers interpret `ok`/`status`/`error`/`row` themselves — see
-    status_board_sync.py). Raises only for a transport-level failure; a structured
-    `{"ok": false, ...}` business failure is returned, not raised."""
+def _post(payload: dict) -> dict:
     settings = get_settings()
     if not is_configured():
         raise StatusBoardWebhookNotConfiguredError(
@@ -51,14 +47,14 @@ def sync_row(fields: dict[str, str]) -> dict:
             "STATUS_BOARD_WEBHOOK_SECRET are not set)."
         )
 
-    payload = {"secret": settings.STATUS_BOARD_WEBHOOK_SECRET, "fields": fields}
+    body = {"secret": settings.STATUS_BOARD_WEBHOOK_SECRET, **payload}
     try:
         # follow_redirects=True is required: Apps Script Web App URLs (.../exec)
         # 302-redirect the actual request to a script.googleusercontent.com URL that
         # serves the real response — without this, every call would return a redirect
         # page instead of the webhook's JSON.
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            response = request_with_retry(client, "POST", settings.STATUS_BOARD_WEBHOOK_URL, json=payload)
+            response = request_with_retry(client, "POST", settings.STATUS_BOARD_WEBHOOK_URL, json=body)
     except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as exc:
         raise StatusBoardWebhookError(f"Status Board webhook call failed: {exc}") from exc
 
@@ -72,3 +68,23 @@ def sync_row(fields: dict[str, str]) -> dict:
         raise StatusBoardWebhookError(
             f"Status Board webhook returned a non-JSON response: {response.text[:500]}"
         ) from exc
+
+
+def sync_row(fields: dict[str, str]) -> dict:
+    """POSTs one row's fields to the Apps Script webhook and returns its parsed JSON
+    response unchanged (callers interpret `ok`/`status`/`error`/`row` themselves — see
+    status_board_sync.py). Raises only for a transport-level failure; a structured
+    `{"ok": false, ...}` business failure is returned, not raised. Omits "action" (the
+    script's original, still-live request shape) rather than sending
+    action: "write" explicitly — no behavior difference, kept exactly as this caller
+    has always sent it."""
+    return _post({"fields": fields})
+
+
+def read_rows() -> dict:
+    """Asks the Apps Script for every current New RFQs row and returns its parsed JSON
+    response unchanged (`{"ok": true, "rows": [...]}` or a structured `{"ok": false,
+    ...}` business failure — see app/services/status_board_read_sync.py for how the
+    caller interprets either). Raises only for a transport-level failure, same as
+    sync_row()."""
+    return _post({"action": "read"})

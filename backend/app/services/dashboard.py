@@ -12,13 +12,13 @@ from sqlalchemy.orm import Session
 from app.models.agency import Agency
 from app.models.enums import IntelligenceCategory, OpportunityStatus, SetAsideType, SourceHealthStatus, TaskStatus
 from app.models.intelligence import IntelligenceItem, IntelligenceSource
-from app.models.opportunity import Opportunity
+from app.models.opportunity import Opportunity, StatusBoardRow
 from app.models.pipeline import PipelineStage
 from app.models.scoring import OpportunityScore
 from app.models.task import Task
 from app.models.user import User
 from app.schemas.dashboard import ChartBucket, DashboardSummary, IntelligenceKpis, KpiCards
-from app.schemas.opportunity import OpportunityListItem
+from app.schemas.opportunity import OpportunityListItem, StatusBoardCountsRead
 from app.schemas.task import TaskRead
 from app.services.app_settings import hide_sample_data_by_default
 from app.services.dashboard_filters import (
@@ -33,6 +33,7 @@ from app.services.dashboard_filters import (
 )
 from app.services.grants_relevance_scoring import RELEVANT_THRESHOLD as GRANTS_RELEVANT_THRESHOLD
 from app.services.sam_relevance_scoring import RELEVANT_THRESHOLD as SAM_RELEVANT_THRESHOLD
+from app.services.status_board_filters import apply_status_board_filter
 
 
 def _to_buckets(agg: dict[str, tuple[float, int]]) -> list[ChartBucket]:
@@ -108,6 +109,25 @@ def _build_intelligence_kpis(
         sources_with_errors=sources_with_errors,
         new_intelligence_since_last_view=new_since_last_view,
         last_viewed_at=last_viewed_at,
+    )
+
+
+def _build_status_board_counts(db: Session, today: date) -> StatusBoardCountsRead:
+    """Every count here is literally len(apply_status_board_filter(..., name, today))
+    -- the exact same predicate the Status Board page's own `filter` query param
+    applies (app/api/routes/status_board.py) -- so this number and its drill-down
+    destination can never show a different set of rows. See
+    app/services/status_board_filters.py."""
+    def count(name: str) -> int:
+        stmt = apply_status_board_filter(select(StatusBoardRow), name, today)
+        return len(db.execute(stmt).scalars().all())
+
+    return StatusBoardCountsRead(
+        on_status_board=count("all_active"),
+        selected_to_submit=count("submit_y"),
+        due_soon=count("due_soon"),
+        submitted=count("submitted"),
+        past_due=count("past_due"),
     )
 
 
@@ -284,11 +304,13 @@ def build_dashboard_summary(db: Session, user: User) -> DashboardSummary:
 
     intelligence_kpis = _build_intelligence_kpis(db, user, now, week_ago, include_samples)
     high_priority_signals = _high_priority_signals(db, include_samples)
+    status_board_counts = _build_status_board_counts(db, now.date())
 
     return DashboardSummary(
         kpis=kpis,
         include_samples=include_samples,
         intelligence=intelligence_kpis,
+        status_board=status_board_counts,
         pipeline_by_stage=_to_buckets(by_stage),
         pipeline_by_agency=_to_buckets(by_agency),
         pipeline_by_state=_to_buckets(by_state),

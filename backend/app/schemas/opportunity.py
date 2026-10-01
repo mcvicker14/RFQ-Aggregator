@@ -1,9 +1,16 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel
 
-from app.models.enums import ContractType, MaturityStage, OpportunityStatus, SetAsideType, StatusBoardSyncStatus
+from app.models.enums import (
+    ContractType,
+    MaturityStage,
+    OpportunityStatus,
+    SetAsideType,
+    StatusBoardMatchMethod,
+    StatusBoardSyncStatus,
+)
 from app.schemas.agency import AgencyRead
 from app.schemas.common import ORMModel
 from app.schemas.validators import AwareDatetime
@@ -142,3 +149,52 @@ class StatusBoardSyncRead(ORMModel):
     last_error: str | None
     last_attempted_at: datetime | None
     synced_at: datetime | None
+
+
+class StatusBoardRowRead(ORMModel):
+    id: UUID
+    sheet_row_number: int
+    date_added: str | None
+    due_date: str | None
+    due_time: str | None
+    client_project_location: str | None
+    rfq_title: str
+    digital_option: str | None
+    standard_form: str | None
+    submit_y_n: str | None
+    date_submitted: str | None
+    importance: str | None
+    quality: str | None
+    probability: str | None
+    go_bys: str | None
+    notes: str | None
+    submitted_y_n: str | None
+    link: str | None
+    due_date_parsed: date | None
+    is_submit_y: bool
+    is_submitted_y: bool
+    opportunity_id: UUID | None
+    match_method: StatusBoardMatchMethod
+    is_manual_entry: bool
+    last_synced_at: datetime
+
+
+class StatusBoardListResponse(ORMModel):
+    rows: list[StatusBoardRowRead]
+    last_sync_attempted_at: datetime | None
+    last_sync_succeeded_at: datetime | None
+    last_error: str | None
+    sheet_url: str | None
+
+
+class StatusBoardCountsRead(ORMModel):
+    """Same shared status_board_filters.py predicates that back the Status Board
+    page's own filtered views -- see app/services/status_board_filters.py. Every count
+    here is exactly len(apply_status_board_filter(all_rows, <name>)), so a Dashboard
+    number and its "click to view" destination can never drift apart."""
+
+    on_status_board: int
+    selected_to_submit: int
+    due_soon: int
+    submitted: int
+    past_due: int

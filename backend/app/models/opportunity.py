@@ -1,12 +1,19 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, DateTime, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, ProvenanceMixin, TimestampMixin, UUIDPKMixin, fk_uuid, pg_enum
-from app.models.enums import ContractType, MaturityStage, OpportunityStatus, SetAsideType, StatusBoardSyncStatus
+from app.models.enums import (
+    ContractType,
+    MaturityStage,
+    OpportunityStatus,
+    SetAsideType,
+    StatusBoardMatchMethod,
+    StatusBoardSyncStatus,
+)
 
 
 class Opportunity(UUIDPKMixin, TimestampMixin, ProvenanceMixin, Base):
@@ -112,3 +119,80 @@ class StatusBoardSync(UUIDPKMixin, TimestampMixin, Base):
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     opportunity: Mapped["Opportunity"] = relationship()
+
+
+class StatusBoardRow(UUIDPKMixin, TimestampMixin, Base):
+    """One row of the New RFQs section as last read back from the SOQ Status Board
+    Google Sheet — see app/services/status_board_read_sync.py. The Sheet, not this
+    table, is authoritative; this is a read-through cache the app never writes back
+    to the sheet from. Every successful refresh deletes and fully replaces every row
+    here (see that module's docstring for why) — a row's presence or absence always
+    reflects the sheet's own state as of last_synced_at, never a partial merge.
+
+    Columns are deliberately raw display strings (exactly as the sheet shows them,
+    e.g. due_date "10/8/2026", submit_y_n "Y" or ""), matching FIELD_KEYS in
+    app/services/status_board_sync.py / COLUMN_ORDER in
+    google-apps-script/status_board_sync.gs — this app is read-only for these manual
+    fields in this first version and must never reinterpret or reformat what a human
+    typed into the sheet. date_added_parsed/due_date_parsed/is_submit_y/is_submitted_y
+    are normalized companions used only for filtering/sorting, derived at read time,
+    never displayed in place of the raw value.
+    """
+
+    __tablename__ = "status_board_rows"
+
+    sheet_row_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+
+    date_added: Mapped[str | None] = mapped_column(String(50), default=None)
+    due_date: Mapped[str | None] = mapped_column(String(50), default=None)
+    due_time: Mapped[str | None] = mapped_column(String(50), default=None)
+    client_project_location: Mapped[str | None] = mapped_column(String(500), default=None)
+    rfq_title: Mapped[str] = mapped_column(String(1000), nullable=False)
+    digital_option: Mapped[str | None] = mapped_column(String(200), default=None)
+    standard_form: Mapped[str | None] = mapped_column(String(200), default=None)
+    submit_y_n: Mapped[str | None] = mapped_column(String(10), default=None)
+    date_submitted: Mapped[str | None] = mapped_column(String(50), default=None)
+    importance: Mapped[str | None] = mapped_column(String(200), default=None)
+    quality: Mapped[str | None] = mapped_column(String(200), default=None)
+    probability: Mapped[str | None] = mapped_column(String(200), default=None)
+    go_bys: Mapped[str | None] = mapped_column(String(500), default=None)
+    notes: Mapped[str | None] = mapped_column(Text, default=None)
+    submitted_y_n: Mapped[str | None] = mapped_column(String(10), default=None)
+    link: Mapped[str | None] = mapped_column(String(1000), default=None)
+
+    date_added_parsed: Mapped[date | None] = mapped_column(Date, default=None, index=True)
+    due_date_parsed: Mapped[date | None] = mapped_column(Date, default=None, index=True)
+    is_submit_y: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    is_submitted_y: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+
+    opportunity_id: Mapped[uuid.UUID | None] = fk_uuid("opportunities.id", nullable=True, ondelete="SET NULL")
+    match_method: Mapped[StatusBoardMatchMethod] = mapped_column(
+        pg_enum(StatusBoardMatchMethod), default=StatusBoardMatchMethod.UNMATCHED, nullable=False, index=True
+    )
+
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    opportunity: Mapped["Opportunity | None"] = relationship()
+
+    @property
+    def is_manual_entry(self) -> bool:
+        """"Not app-originated" per the product spec -- true for every row except an
+        exact StatusBoardSync relationship hit, including the other 3 match tiers:
+        those link display/drill-down to a real Opportunity, but the ROW ITSELF
+        wasn't necessarily placed on the sheet by this app's own sync."""
+        return self.match_method != StatusBoardMatchMethod.SYNC_RELATIONSHIP
+
+
+class StatusBoardCacheState(UUIDPKMixin, TimestampMixin, Base):
+    """Singleton row tracking the Status Board read-sync's own health, independent of
+    StatusBoardRow's row count (which can legitimately be zero right after the sheet's
+    New RFQs section is cleared for a new year) -- see
+    app/services/status_board_read_sync.py. At most one row ever exists; callers
+    always fetch-or-create it, never key off its id."""
+
+    __tablename__ = "status_board_cache_state"
+
+    last_sync_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_sync_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_error: Mapped[str | None] = mapped_column(Text, default=None)
+    row_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

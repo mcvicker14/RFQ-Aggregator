@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from app.schemas.intelligence import IntelligenceItemRead
-from app.schemas.opportunity import OpportunityListItem
+from app.schemas.opportunity import OpportunityListItem, StatusBoardCountsRead
 from app.schemas.task import TaskRead
 
 
@@ -51,6 +51,7 @@ class DashboardSummary(BaseModel):
     # destination page's count can never diverge from the number the user clicked.
     include_samples: bool
     intelligence: IntelligenceKpis
+    status_board: StatusBoardCountsRead
     pipeline_by_stage: list[ChartBucket]
     pipeline_by_agency: list[ChartBucket]
     pipeline_by_state: list[ChartBucket]

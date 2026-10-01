@@ -15,6 +15,7 @@ import {
   Landmark,
   AlertTriangle,
   Bell,
+  ClipboardList,
 } from "lucide-react";
 import { dashboardApi } from "@/lib/api/resources";
 import { KpiCard } from "@/components/dashboard/kpi-card";
@@ -50,6 +51,10 @@ function discoverHref(category: string, includeSamples: boolean): string {
   return `/discover?${usp.toString()}`;
 }
 
+function statusBoardHref(filter: string): string {
+  return `/status-board?filter=${filter}`;
+}
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +76,7 @@ export default function DashboardPage() {
   if (error) return <ErrorState message={error} onRetry={load} />;
   if (!data) return null;
 
-  const { kpis, intelligence: intel, include_samples: includeSamples } = data;
+  const { kpis, intelligence: intel, status_board: statusBoard, include_samples: includeSamples } = data;
   const today = new Date();
 
   return (
@@ -176,6 +181,46 @@ export default function DashboardPage() {
             value={intel.sources_with_errors}
             tone={intel.sources_with_errors > 0 ? "destructive" : "default"}
             href={hrefIf(intel.sources_with_errors, "/sources?health=error")}
+          />
+        </div>
+      </div>
+
+      {/* Status Board — compact by design (per product spec: "keep it compact, do not
+          make the Dashboard a wall of cards again"). Every count here is the exact
+          same named status_board_filters.py predicate the Status Board page's own
+          `filter` param applies, so a number and its destination always agree. */}
+      <div>
+        <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          <ClipboardList className="h-3.5 w-3.5" /> Status Board
+        </h3>
+        <div className="flex flex-wrap gap-2">
+          <CompactStat
+            label="On Status Board"
+            value={statusBoard.on_status_board}
+            href={hrefIf(statusBoard.on_status_board, statusBoardHref("all_active"))}
+          />
+          <CompactStat
+            label="Selected to Submit"
+            value={statusBoard.selected_to_submit}
+            tone={statusBoard.selected_to_submit > 0 ? "warning" : "default"}
+            href={hrefIf(statusBoard.selected_to_submit, statusBoardHref("submit_y"))}
+          />
+          <CompactStat
+            label="Due Soon"
+            value={statusBoard.due_soon}
+            href={hrefIf(statusBoard.due_soon, statusBoardHref("due_soon"))}
+          />
+          <CompactStat
+            label="Submitted"
+            value={statusBoard.submitted}
+            tone="success"
+            href={hrefIf(statusBoard.submitted, statusBoardHref("submitted"))}
+          />
+          <CompactStat
+            label="Past Due"
+            value={statusBoard.past_due}
+            tone={statusBoard.past_due > 0 ? "destructive" : "default"}
+            href={hrefIf(statusBoard.past_due, statusBoardHref("past_due"))}
           />
         </div>
       </div>
