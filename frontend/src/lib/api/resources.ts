@@ -266,6 +266,8 @@ export const statusBoardApi = {
   list: (params: StatusBoardListParams = {}) =>
     api.get<StatusBoardListResponse>(`/api/status-board/rows${buildQuery(params)}`),
   refresh: () => api.post<StatusBoardListResponse>("/api/status-board/refresh"),
+  setSubmit: (data: { request_id: string; source_record_id: string; expected_revision: string; expected_submit: string; value: "Y" | "N" }) =>
+    api.patch<{ status: "confirmed"; value: "Y" | "N" }>("/api/status-board/submit", data),
 };
 
 // --- Settings -----------------------------------------------------------------------

@@ -141,6 +141,9 @@ class StatusBoardRow(UUIDPKMixin, TimestampMixin, Base):
 
     __tablename__ = "status_board_rows"
 
+    source_record_id: Mapped[str | None] = mapped_column(String(36), default=None)
+    source_revision: Mapped[str | None] = mapped_column(String(64), default=None)
+
     sheet_row_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
 
     date_added: Mapped[str | None] = mapped_column(String(50), default=None)

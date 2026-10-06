@@ -4,11 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/states";
 import type { StatusBoardRow } from "@/types";
 
-// Exact 16 New RFQs columns from the product spec, in sheet order — this app is
-// read-only for every one of these in this first version (the Google Sheet remains
-// authoritative for Submit?, Importance, Quality, Probability, Notes, Submitted Y/N),
-// so every cell below renders the raw value exactly as the sheet has it, never
-// reformatted or reinterpreted.
+// The focused view keeps daily decisions visible; all 16 raw sheet fields remain
+// available in the expanded view. Only Submit? has an owner-driven edit action.
 function cell(value: string | null, className = "") {
   if (!value) return <TableCell className={className}>—</TableCell>;
   return (
@@ -18,7 +15,7 @@ function cell(value: string | null, className = "") {
   );
 }
 
-export function StatusBoardTable({ rows }: { rows: StatusBoardRow[] }) {
+export function StatusBoardTable({ rows, compact = false, onEdit, editEnabled = true }: { rows: StatusBoardRow[]; compact?: boolean; onEdit?: (row: StatusBoardRow) => void; editEnabled?: boolean }) {
   if (rows.length === 0) {
     return (
       <EmptyState
@@ -27,6 +24,33 @@ export function StatusBoardTable({ rows }: { rows: StatusBoardRow[] }) {
       />
     );
   }
+
+  function decision(row: StatusBoardRow) {
+    const usable = editEnabled && !!row.source_record_id && !!row.source_revision && !row.is_submitted_y;
+    return <div className="flex items-center gap-2"><span className={row.is_submit_y ? "font-semibold text-primary" : "text-muted-foreground"}>{row.submit_y_n || "—"}</span>
+      {onEdit && <button type="button" disabled={!usable} onClick={() => onEdit(row)}
+        aria-label={`Edit Submit for ${row.rfq_title}`} title={usable ? "Type Y or N" : "Refresh and review the sheet; source identity setup may be required"}
+        className="rounded px-2 py-1 text-xs text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:text-muted-foreground">Edit</button>}</div>;
+  }
+
+  if (compact) return <>
+    <div className="divide-y divide-border rounded-lg border border-border bg-card md:hidden">{rows.map(row => <article key={row.id} className="space-y-2 p-3">
+      <div className="font-medium">{row.opportunity_id ? <Link href={`/opportunities/${row.opportunity_id}`} className="text-primary hover:underline">{row.rfq_title}</Link> : row.rfq_title}</div>
+      <p className="text-xs text-muted-foreground">{row.client_project_location || "—"}</p>
+      <div className="flex flex-wrap items-center justify-between gap-2"><div className="text-xs">Due {row.due_date || "—"} {row.due_time}</div><div className="flex items-center gap-2 text-sm"><span className="text-xs text-muted-foreground">Submit?</span>{decision(row)}</div></div>
+      {row.is_submitted_y && <Badge variant="success">Submitted</Badge>}
+      <div className="flex items-start justify-between gap-3"><p className="text-xs text-muted-foreground">{row.notes || "No notes"}</p>{row.link && <a href={row.link} target="_blank" rel="noreferrer" className="shrink-0 text-xs text-primary hover:underline">Source</a>}</div>
+    </article>)}</div>
+    <div className="hidden rounded-lg border border-border bg-card md:block"><Table>
+    <TableHeader><TableRow><TableHead className="min-w-[220px]">RFQ / Client</TableHead><TableHead>Due</TableHead><TableHead>Submit?</TableHead><TableHead className="min-w-[180px]">Notes</TableHead><TableHead>Link</TableHead></TableRow></TableHeader>
+    <TableBody>{rows.map(row => <TableRow key={row.id}>
+      <TableCell><div className="max-w-md font-medium">{row.opportunity_id ? <Link href={`/opportunities/${row.opportunity_id}`} className="text-primary hover:underline">{row.rfq_title}</Link> : row.rfq_title}</div><div className="mt-1 text-xs text-muted-foreground">{row.client_project_location || "—"}</div></TableCell>
+      <TableCell className="whitespace-nowrap">{row.due_date || "—"}<div className="text-xs text-muted-foreground">{row.due_time}</div></TableCell>
+      <TableCell>{decision(row)}{row.is_submitted_y && <Badge variant="success">Submitted</Badge>}</TableCell>
+      {cell(row.notes, "max-w-[300px]")}
+      <TableCell>{row.link ? <a href={row.link} target="_blank" rel="noreferrer" className="text-primary hover:underline" aria-label={`Open source for ${row.rfq_title}`}>Open</a> : "—"}</TableCell>
+    </TableRow>)}</TableBody>
+  </Table></div></>;
 
   return (
     <div className="rounded-lg border border-border bg-card">
@@ -75,11 +99,7 @@ export function StatusBoardTable({ rows }: { rows: StatusBoardRow[] }) {
               {cell(row.digital_option)}
               {cell(row.standard_form)}
               <TableCell>
-                {row.is_submit_y ? (
-                  <Badge variant="accent">Y</Badge>
-                ) : (
-                  <span className="text-muted-foreground">{row.submit_y_n || "—"}</span>
-                )}
+                {decision(row)}
               </TableCell>
               {cell(row.date_submitted)}
               {cell(row.importance)}

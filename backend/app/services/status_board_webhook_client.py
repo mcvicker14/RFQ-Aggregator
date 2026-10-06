@@ -39,7 +39,7 @@ def is_configured() -> bool:
     return bool(settings.STATUS_BOARD_WEBHOOK_URL and settings.STATUS_BOARD_WEBHOOK_SECRET)
 
 
-def _post(payload: dict) -> dict:
+def _post(payload: dict, *, retry: bool = True) -> dict:
     settings = get_settings()
     if not is_configured():
         raise StatusBoardWebhookNotConfiguredError(
@@ -54,7 +54,11 @@ def _post(payload: dict) -> dict:
         # serves the real response — without this, every call would return a redirect
         # page instead of the webhook's JSON.
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            response = request_with_retry(client, "POST", settings.STATUS_BOARD_WEBHOOK_URL, json=body)
+            if retry:
+                response = request_with_retry(client, "POST", settings.STATUS_BOARD_WEBHOOK_URL, json=body)
+            else:
+                # A timeout may occur after the cell changed. Never replay an edit.
+                response = client.post(settings.STATUS_BOARD_WEBHOOK_URL, json=body)
     except httpx.HTTPError as exc:
         raise StatusBoardWebhookError("Status Board webhook transport failed; verify connectivity and deployment.") from exc
 
@@ -98,3 +102,7 @@ def read_rows() -> dict:
             "version of that deployment. Do not add fields or retry as a write."
         )
     return result
+
+
+def set_submit(payload: dict) -> dict:
+    return _post({"action": "set_submit", **payload}, retry=False)

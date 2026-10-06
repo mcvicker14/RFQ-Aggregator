@@ -7,9 +7,14 @@
  *     this spreadsheet's New RFQs section. The no-"action" shape is the original,
  *     still-live caller (status_board_webhook_client.py) — treated identically to
  *     action:"write" so that existing integration keeps working unchanged.
- *   - {secret, action:"read"} — returns every current New RFQs row (including
+ *   - {secret, action:"read"} - returns every current New RFQs row (including
  *     existing manual rows never touched by this app) as JSON, for the backend's own
  *     Status Board page to display and poll. Read-only: never writes anything.
+ *   - {secret, action:"set_submit", request_id, source_record_id,
+ *      expected_revision, expected_submit, value:"Y"|"N"} - optional owner-driven
+ *     edit of H only. Disabled until separate reviewed activation. Requires row
+ *     developer metadata and the Advanced Sheets service. No credential changes
+ *     or service/scope activation is performed by this source file.
  * This script is the *only* thing that ever reads or writes the sheet — the backend
  * holds no Google credentials of any kind and only knows this script's Web App URL
  * and a shared secret.
@@ -69,6 +74,7 @@ var COLUMN_ORDER = [
 var LINK_KEY = "link";
 var TITLE_KEY = "rfq_title";
 var CLIENT_KEY = "client_project_location";
+var POI_RECORD_KEY = "POI_RECORD_ID_V1";
 
 
 function doPost(e) {
@@ -104,7 +110,7 @@ function handlePost(e) {
   }
 
   var action = body.action || "write"; // no action given = write, for the existing deployed caller
-  if (action !== "read" && action !== "write") {
+  if (action !== "read" && action !== "write" && action !== "set_submit") {
     return { ok: false, error: "bad_request", message: "Unsupported action." };
   }
 
@@ -122,6 +128,7 @@ function handlePost(e) {
     if (action === "read") {
       return readNewRfqsRows_();
     }
+    if (action === "set_submit") return setSubmit_(body);
     var fields = body.fields;
     if (!fields || typeof fields !== "object") {
       return { ok: false, error: "bad_request", message: "Missing 'fields' object." };
@@ -229,6 +236,7 @@ function readNewRfqsRows_() {
     return block;
   }
 
+  var identities = recordIdentities_(block.sheet);
   var rows = block.existingRows.map(function (dataRow, i) {
     var row = { sheet_row_number: block.headerRow + 1 + i };
     COLUMN_ORDER.forEach(function (key) {
@@ -238,6 +246,9 @@ function readNewRfqsRows_() {
     // Display text may be "click here"; preserve the actual hyperlink separately.
     var richLink = block.links[i][0];
     row.link = (richLink && richLink.getLinkUrl()) || row.link;
+    var identity = identities[row.sheet_row_number];
+    row.source_record_id = identity ? identity.value : null;
+    row.source_revision = identity ? revision_(row, block.sheet.getRange(row.sheet_row_number, 1, 1, 16).getFormulas()[0]) : null;
     return row;
   });
   return { ok: true, protocol_version: 2, rows: rows };
@@ -269,7 +280,7 @@ function findReadBlock_() {
     }
     if (values[i].every(function (cell) { return String(cell).trim() === ""; })) {
       return {
-        ok: true, headerRow: start, columns: columns, existingRows: values.slice(start, i),
+        ok: true, sheet: sheet, headerRow: start, columns: columns, existingRows: values.slice(start, i),
         links: i === start ? [] : sheet.getRange(start + 1, columns[LINK_KEY] + 1, i - start, 1).getRichTextValues()
       };
     }
@@ -295,6 +306,115 @@ function readColumns_(header) {
   var columns = {};
   keys.forEach(function (key, i) { columns[key] = i; });
   return columns;
+}
+
+// Metadata belongs to the sheet row, rather than a cached row number. Reads never
+// create it. Duplicate/copied identities are deliberately unusable for editing.
+function recordIdentities_(sheet) {
+  var result = {}, values = {}, all = [];
+  if (!sheet.createDeveloperMetadataFinder) return result;
+  sheet.createDeveloperMetadataFinder().withKey(POI_RECORD_KEY).find().forEach(function (m) {
+    var range = m.getLocation().getRow();
+    var value = m.getValue();
+    if (!range || !/^[a-f0-9-]{36}$/.test(value)) return;
+    var number = range.getRow();
+    all.push({ number: number, value: value, id: m.getId() });
+    values[value] = (values[value] || 0) + 1;
+  });
+  all.forEach(function (m) {
+    if (values[m.value] !== 1 || Object.prototype.hasOwnProperty.call(result, m.number)) result[m.number] = null;
+    else result[m.number] = m;
+  });
+  return result;
+}
+
+function revision_(row, formulas) {
+  var canonical = COLUMN_ORDER.map(function (key) { return row[key] || ""; });
+  canonical.push(formulas);
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, JSON.stringify(canonical), Utilities.Charset.UTF_8)
+    .map(function (b) { return ((b + 256) % 256).toString(16).padStart(2, "0"); }).join("");
+}
+
+// New action is isolated from Track + Add. Requires reviewed activation and the
+// Advanced Sheets service; never falls back to a positional or whole-row write.
+function setSubmit_(body) {
+  if (PropertiesService.getScriptProperties().getProperty("POI_SUBMIT_EDITS_ENABLED") !== "true" || typeof Sheets === "undefined")
+    return { ok: false, error: "needs_configuration", message: "Submit editing is not enabled." };
+  var allowed = ["secret", "action", "request_id", "source_record_id", "expected_revision", "expected_submit", "value"];
+  if (Object.keys(body).some(function (key) { return allowed.indexOf(key) < 0; }) ||
+      !/^[a-f0-9-]{36}$/.test(body.source_record_id || "") || !/^[a-f0-9-]{36}$/.test(body.request_id || "") ||
+      !/^[a-f0-9]{64}$/.test(body.expected_revision || "") || typeof body.expected_submit !== "string" ||
+      (body.value !== "Y" && body.value !== "N"))
+    return { ok: false, error: "bad_request", message: "Only an explicit Y or N Submit edit is supported." };
+  var before = readNewRfqsRows_();
+  if (!before.ok) return before;
+  var matches = before.rows.filter(function (r) { return r.source_record_id === body.source_record_id; });
+  if (matches.length !== 1) return editConflict_();
+  var row = matches[0];
+  if (row.source_revision !== body.expected_revision || row.submit_y_n !== body.expected_submit ||
+      /^Y/i.test(row.submitted_y_n.trim())) return editConflict_();
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STATUS_BOARD_SHEET_NAME);
+  var cell = sheet.getRange(row.sheet_row_number, 8, 1, 1);
+  if (cell.getFormulas()[0][0]) return editConflict_();
+  var formulas = sheet.getRange(row.sheet_row_number, 1, 1, 16).getFormulas()[0];
+  if (revision_(row, formulas) !== body.expected_revision) return editConflict_();
+  var identity = recordIdentities_(sheet)[row.sheet_row_number];
+  if (!identity || identity.value !== body.source_record_id) return editConflict_();
+  var block = findReadBlock_();
+  if (!block.ok || row.sheet_row_number <= block.headerRow || row.sheet_row_number > block.headerRow + block.existingRows.length)
+    return editConflict_();
+  // Google resolves the immutable metadata ID AND exact verified location at
+  // write time. A moved/deleted row cannot cause a positional replacement write.
+  // Nulls are skipped, so H is the ONLY cell changed; RAW prevents formulas.
+  // Google offers no atomic old-value CAS: concurrent human edits in the small
+  // read/write window remain possible. Readback detects differences, never rolls
+  // back someone else's work, and reports uncertainty instead of silently retrying.
+  var updated = Sheets.Spreadsheets.Values.batchUpdateByDataFilter({
+    valueInputOption: "RAW",
+    data: [{ dataFilter: { developerMetadataLookup: { metadataId: identity.id,
+      metadataLocation: { dimensionRange: { sheetId: sheet.getSheetId(), dimension: "ROWS",
+        startIndex: row.sheet_row_number - 1, endIndex: row.sheet_row_number } },
+      locationMatchingStrategy: "EXACT_LOCATION" } },
+      majorDimension: "ROWS", values: [[null, null, null, null, null, null, null, body.value]] }]
+  }, SpreadsheetApp.getActiveSpreadsheet().getId());
+  if (updated.totalUpdatedCells !== 1) return { ok: false, error: "uncertain", message: "Refresh and inspect the sheet before trying again." };
+  SpreadsheetApp.flush();
+  var after = readNewRfqsRows_();
+  var expectedAfter = Object.assign({}, row, { submit_y_n: body.value });
+  var checked = after.ok ? after.rows.filter(function (r) { return r.source_record_id === body.source_record_id; }) : [];
+  if (checked.length !== 1 || checked[0].submit_y_n !== body.value || checked[0].source_revision !== revision_(expectedAfter, formulas) ||
+      COLUMN_ORDER.some(function (key) { return key !== "submit_y_n" && checked[0][key] !== row[key]; }))
+    return { ok: false, error: "uncertain", message: "Concurrent sheet changes detected. Refresh and inspect before trying again." };
+  return { ok: true, status: "confirmed", source_record_id: body.source_record_id,
+    request_id: body.request_id, value: body.value, source_revision: checked[0].source_revision };
+}
+
+function editConflict_() {
+  return { ok: false, error: "conflict", message: "The sheet row changed or is no longer editable. Refresh and review it." };
+}
+
+// OWNER-ONLY, MANUAL SETUP after separate review approval. No webhook action calls
+// this. Adds invisible IDs to CURRENT New RFQs rows, without changing any cells.
+// Run with the sheet closed to other editors; compare a full before/after snapshot.
+function preparePoiSubmitIdentities() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) throw new Error("Another sync is running.");
+  try {
+    var block = findReadBlock_();
+    if (!block.ok) throw new Error(block.message);
+    var ids = recordIdentities_(block.sheet);
+    if (Object.keys(ids).some(function (number) { return ids[number] === null; }))
+      throw new Error("Ambiguous existing identity; manual review required before setup.");
+    block.existingRows.forEach(function (_, i) {
+      var number = block.headerRow + 1 + i;
+      if (Object.prototype.hasOwnProperty.call(ids, number)) {
+        if (!ids[number]) throw new Error("Ambiguous existing identity; manual review required.");
+        return;
+      }
+      block.sheet.getRange(number, 1, 1, block.sheet.getMaxColumns())
+        .addDeveloperMetadata(POI_RECORD_KEY, Utilities.getUuid());
+    });
+  } finally { lock.releaseLock(); }
 }
 
 function isBlankRow(row) {

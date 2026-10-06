@@ -32,7 +32,10 @@ def test_invalid_snapshot_never_deletes_cache_or_advances_success(monkeypatch, r
     assert state.last_error
     assert state.last_sync_succeeded_at == prior
     assert state.row_count == 24
-    db.execute.assert_not_called()
+    # Taking the advisory read lock is allowed; malformed input must never issue
+    # the subsequent DELETE/INSERT cache replacement.
+    assert len(db.execute.call_args_list) == 1
+    assert "pg_try_advisory_xact_lock" in str(db.execute.call_args.args[0])
     db.add.assert_not_called()
     db.commit.assert_called_once()
 

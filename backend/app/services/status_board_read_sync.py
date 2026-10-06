@@ -40,7 +40,7 @@ import logging
 import re
 from datetime import date, datetime, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from app.models.agency import Agency
@@ -152,6 +152,7 @@ def _validate_rows(result: dict) -> list[dict]:
     if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(result.get("rows"), list):
         raise ValueError("Status Board read returned an invalid snapshot envelope.")
     seen = set()
+    record_ids = set()
     for row in result["rows"]:
         if not isinstance(row, dict):
             raise ValueError("Status Board read returned a non-object row.")
@@ -159,6 +160,14 @@ def _validate_rows(result: dict) -> list[dict]:
         if type(number) is not int or number < 1 or number in seen:
             raise ValueError("Status Board read returned a missing, invalid or duplicate row number.")
         seen.add(number)
+        record_id = row.get("source_record_id")
+        revision = row.get("source_revision")
+        if record_id is not None:
+            if not isinstance(record_id, str) or not re.fullmatch(r"[a-f0-9-]{36}", record_id) or record_id in record_ids:
+                raise ValueError("Status Board returned an invalid or duplicate source identity.")
+            record_ids.add(record_id)
+        if revision is not None and (not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{64}", revision)):
+            raise ValueError("Status Board returned an invalid source revision.")
         for key in FIELD_KEYS:
             value = row.get(key)
             if key not in row or (value is not None and not isinstance(value, str)):
@@ -169,13 +178,21 @@ def _validate_rows(result: dict) -> list[dict]:
     return result["rows"]
 
 
-def refresh_status_board_cache(db: Session) -> StatusBoardCacheState:
+def refresh_status_board_cache(db: Session, *, minimum_interval_seconds: int = 0) -> StatusBoardCacheState:
     """Entry point for both the manual "Refresh Status Board" action and the
     automatic poll (see app/api/routes/status_board.py and app/main.py). Always
     returns the current StatusBoardCacheState; check .last_error to see whether THIS
     call succeeded -- a prior successful cache is never discarded by a failed one."""
+    # Serialize complete cache replacement across scheduler, tabs and workers.
+    # Transaction-scoped lock releases on commit/error; never leaks pooled locks.
+    if not db.execute(text("SELECT pg_try_advisory_xact_lock(710042001)")).scalar():
+        return db.execute(select(StatusBoardCacheState)).scalars().first() or StatusBoardCacheState(row_count=0)
     state = _get_or_create_cache_state(db)
     now = datetime.now(timezone.utc)
+    if minimum_interval_seconds and state.last_sync_attempted_at and \
+            (now - state.last_sync_attempted_at).total_seconds() < minimum_interval_seconds:
+        db.commit()
+        return state
     state.last_sync_attempted_at = now
 
     try:
@@ -220,6 +237,8 @@ def refresh_status_board_cache(db: Session) -> StatusBoardCacheState:
         match_row = {**raw, "_due_date_parsed": due_parsed}
         opportunity_id, match_method = _match_opportunity(db, match_row, sheet_row_number, synced_by_row)
         new_rows.append(StatusBoardRow(
+            source_record_id=raw.get("source_record_id"),
+            source_revision=raw.get("source_revision"),
             sheet_row_number=sheet_row_number,
             date_added=raw.get("date_added") or None,
             due_date=raw.get("due_date") or None,

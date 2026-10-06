@@ -23,6 +23,7 @@ from app.models.reference import Discipline, NaicsCode, OpportunityDiscipline  #
 from app.models.scoring import OpportunityScore, ScoringWeightProfile  # noqa: F401
 from app.models.task import Task  # noqa: F401
 from app.models.user import User  # noqa: F401
+from app.models.status_board_edit import StatusBoardEdit  # noqa: F401
 from app.models.winloss import WinLossReview  # noqa: F401
 
 __all__ = [

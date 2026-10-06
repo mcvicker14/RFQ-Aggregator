@@ -10,13 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.deps import get_current_user, require_bd_or_above
+from app.core.deps import get_current_user, require_bd_or_above, require_decision_maker
 from app.db.session import get_db
 from app.models.opportunity import StatusBoardCacheState, StatusBoardRow
 from app.models.user import User
-from app.schemas.opportunity import StatusBoardListResponse, StatusBoardRowRead
+from app.schemas.opportunity import StatusBoardListResponse, StatusBoardRowRead, StatusBoardSubmitEdit, StatusBoardSubmitResult
 from app.services.status_board_filters import STATUS_BOARD_FILTER_NAMES, apply_status_board_filter
 from app.services.status_board_read_sync import refresh_status_board_cache
+from app.services.status_board_submit import set_board_submit
 
 router = APIRouter(prefix="/api/status-board", tags=["status-board"])
 
@@ -55,6 +56,7 @@ def _build_list_response(
     state = _get_cache_state(db)
 
     return StatusBoardListResponse(
+        submit_edits_enabled=get_settings().STATUS_BOARD_SUBMIT_EDITS_ENABLED,
         rows=[StatusBoardRowRead.model_validate(r) for r in rows],
         last_sync_attempted_at=state.last_sync_attempted_at if state else None,
         last_sync_succeeded_at=state.last_sync_succeeded_at if state else None,
@@ -78,5 +80,11 @@ def list_status_board_rows(
 
 @router.post("/refresh", response_model=StatusBoardListResponse)
 def refresh_status_board(db: Session = Depends(get_db), _current: User = Depends(require_bd_or_above)):
-    refresh_status_board_cache(db)
+    refresh_status_board_cache(db, minimum_interval_seconds=45)
     return _build_list_response(db, "all_active", None, None, "due_date", "asc")
+
+
+@router.patch("/submit", response_model=StatusBoardSubmitResult)
+def edit_status_board_submit(edit: StatusBoardSubmitEdit, db: Session = Depends(get_db),
+                             current: User = Depends(require_decision_maker)):
+    return set_board_submit(db, current, edit)

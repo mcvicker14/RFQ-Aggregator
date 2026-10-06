@@ -1,7 +1,8 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
 
 from app.models.enums import (
     ContractType,
@@ -152,6 +153,8 @@ class StatusBoardSyncRead(ORMModel):
 
 
 class StatusBoardRowRead(ORMModel):
+    source_record_id: str | None = None
+    source_revision: str | None = None
     id: UUID
     sheet_row_number: int
     date_added: str | None
@@ -180,11 +183,28 @@ class StatusBoardRowRead(ORMModel):
 
 
 class StatusBoardListResponse(ORMModel):
+    submit_edits_enabled: bool = False
     rows: list[StatusBoardRowRead]
     last_sync_attempted_at: datetime | None
     last_sync_succeeded_at: datetime | None
     last_error: str | None
     sheet_url: str | None
+
+
+class StatusBoardSubmitEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    source_record_id: UUID
+    expected_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expected_submit: str = Field(max_length=10)
+    value: Literal["Y", "N"]
+
+
+class StatusBoardSubmitResult(BaseModel):
+    request_id: str
+    status: Literal["confirmed"]
+    source_record_id: str
+    value: Literal["Y", "N"]
 
 
 class StatusBoardCountsRead(ORMModel):

@@ -463,6 +463,8 @@ export type StatusBoardMatchMethod =
   | "unmatched";
 
 export interface StatusBoardRow {
+  source_record_id: string | null;
+  source_revision: string | null;
   id: string;
   sheet_row_number: number;
   date_added: string | null;
@@ -491,6 +493,7 @@ export interface StatusBoardRow {
 }
 
 export interface StatusBoardListResponse {
+  submit_edits_enabled: boolean;
   rows: StatusBoardRow[];
   last_sync_attempted_at: string | null;
   last_sync_succeeded_at: string | null;

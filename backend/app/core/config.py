@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     # google-apps-script/status_board_sync.gs for the script these point at.
     STATUS_BOARD_WEBHOOK_URL: str | None = None
     STATUS_BOARD_WEBHOOK_SECRET: str | None = None
+    STATUS_BOARD_SUBMIT_EDITS_ENABLED: bool = False
     # Purely cosmetic: the actual spreadsheet's own URL (docs.google.com/spreadsheets/
     # d/...), used only to render an "Open in Google Sheets" link on the Status Board
     # page. Optional and separate from STATUS_BOARD_WEBHOOK_URL (the Apps Script's own
