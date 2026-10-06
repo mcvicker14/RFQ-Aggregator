@@ -495,10 +495,15 @@ def _process_fetched_items(
         run.status = SyncRunStatus.FAILURE
     run.finished_at = datetime.now(timezone.utc)
 
-    source.last_successful_sync_at = run.finished_at
+    # A partial/failed ingest is not evidence that this source is fully current.
+    if run.status == SyncRunStatus.SUCCESS:
+        source.last_successful_sync_at = run.finished_at
     source.last_result_count = fetched
     source.last_error = None if errored == 0 else f"{errored} item(s) failed to process — see recent sync runs for detail."
-    source.health_status = SourceHealthStatus.HEALTHY if errored == 0 else SourceHealthStatus.DEGRADED
+    source.health_status = (
+        SourceHealthStatus.HEALTHY if errored == 0 else
+        SourceHealthStatus.FAILING if run.status == SyncRunStatus.FAILURE else SourceHealthStatus.DEGRADED
+    )
     db.commit()
     db.refresh(run)
     return run

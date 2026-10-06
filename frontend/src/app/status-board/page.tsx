@@ -63,7 +63,9 @@ function StatusBoardPageInner() {
     setRefreshing(true);
     setError(null);
     try {
-      const result = await statusBoardApi.refresh();
+      await statusBoardApi.refresh();
+      // Refresh returns the default view; reapply the controls currently shown.
+      const result = await statusBoardApi.list({ filter, client: client || undefined, sort, order });
       setData(result);
     } catch (e) {
       setError((e as Error).message);
@@ -91,7 +93,9 @@ function StatusBoardPageInner() {
             )}
             {data?.last_error && (
               <div className="mt-0.5 max-w-xs text-destructive" title={data.last_error}>
-                Last refresh failed — showing the previously synced board.
+                {data.last_sync_succeeded_at
+                  ? "Last refresh failed — showing the previously synced board."
+                  : "Last refresh failed — no successful board sync yet."}
               </div>
             )}
           </div>

@@ -55,19 +55,22 @@ def _post(payload: dict) -> dict:
         # page instead of the webhook's JSON.
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             response = request_with_retry(client, "POST", settings.STATUS_BOARD_WEBHOOK_URL, json=body)
-    except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as exc:
-        raise StatusBoardWebhookError(f"Status Board webhook call failed: {exc}") from exc
+    except httpx.HTTPError as exc:
+        raise StatusBoardWebhookError("Status Board webhook transport failed; verify connectivity and deployment.") from exc
 
     if response.status_code != 200:
         raise StatusBoardWebhookError(
-            f"Status Board webhook returned HTTP {response.status_code}: {response.text[:500]}"
+            f"Status Board webhook returned HTTP {response.status_code}."
         )
     try:
-        return response.json()
+        result = response.json()
     except ValueError as exc:
         raise StatusBoardWebhookError(
-            f"Status Board webhook returned a non-JSON response: {response.text[:500]}"
+            "Status Board webhook returned a non-JSON response."
         ) from exc
+    if not isinstance(result, dict) or type(result.get("ok")) is not bool:
+        raise StatusBoardWebhookError("Status Board webhook returned an invalid response envelope.")
+    return result
 
 
 def sync_row(fields: dict[str, str]) -> dict:
@@ -87,4 +90,11 @@ def read_rows() -> dict:
     ...}` business failure — see app/services/status_board_read_sync.py for how the
     caller interprets either). Raises only for a transport-level failure, same as
     sync_row()."""
-    return _post({"action": "read"})
+    result = _post({"action": "read"})
+    if result.get("error") == "bad_request" and result.get("message") == "Missing 'fields' object.":
+        raise StatusBoardWebhookError(
+            "Status Board endpoint does not support action=read. Verify STATUS_BOARD_WEBHOOK_URL "
+            "targets the intended Apps Script deployment and publish the reviewed script as a new "
+            "version of that deployment. Do not add fields or retry as a write."
+        )
+    return result

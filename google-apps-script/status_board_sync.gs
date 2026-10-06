@@ -27,7 +27,7 @@
  *      icon) > New version — editing the code alone does NOT update the live /exec
  *      endpoint.
  *
- * VERIFIED SHEET STRUCTURE this script assumes (matches backend/app/services/
+ * WRITE-PATH SHEET STRUCTURE this script assumes (matches backend/app/services/
  * status_board_sync.py's own assumptions about the same sheet):
  *   - tab "Active" (STATUS_BOARD_SHEET_NAME below) — the workbook's other tab,
  *     "2026 Archive", is a separate sheet this script never opens, reads, or writes;
@@ -43,6 +43,8 @@
  * finds that blank row, or doesn't find a blank row within a generous search window.
  * If the sheet's structure ever changes, fix it there and re-verify before trusting
  * this script again; it will never silently guess a new insertion point.
+ * The read path independently locates one exact New RFQs header (bounded to 500
+ * rows) because submitted rows above it move the section. It never inserts rows.
  */
 
 // The exact tab to write to — explicit, not the default-sheet fallback, so a rename
@@ -82,7 +84,7 @@ function doPost(e) {
 // Lets you sanity-check the deployment itself (open the /exec URL in a browser) before
 // wiring up the backend at all.
 function doGet(e) {
-  return jsonOutput({ ok: true, message: "SOQ Status Board webhook is live. POST a row to sync it." });
+  return jsonOutput({ ok: true, protocol_version: 2, actions: ["read", "write"] });
 }
 
 function handlePost(e) {
@@ -102,6 +104,9 @@ function handlePost(e) {
   }
 
   var action = body.action || "write"; // no action given = write, for the existing deployed caller
+  if (action !== "read" && action !== "write") {
+    return { ok: false, error: "bad_request", message: "Unsupported action." };
+  }
 
   // Serializes concurrent doPost runs against this sheet so two near-simultaneous
   // requests can never both compute the same insertion point and both write there —
@@ -219,20 +224,77 @@ function syncRow(fields) {
  * Read-only: never writes, never labels, never reorders anything.
  */
 function readNewRfqsRows_() {
-  var block = findNewRfqsBlock_();
+  var block = findReadBlock_();
   if (!block.ok) {
     return block;
   }
 
   var rows = block.existingRows.map(function (dataRow, i) {
-    var row = { sheet_row_number: NEW_RFQS_HEADER_ROW + 1 + i };
-    COLUMN_ORDER.forEach(function (key, idx) {
-      var value = dataRow[idx];
+    var row = { sheet_row_number: block.headerRow + 1 + i };
+    COLUMN_ORDER.forEach(function (key) {
+      var value = dataRow[block.columns[key]];
       row[key] = value === null || value === undefined ? "" : String(value);
     });
+    // Display text may be "click here"; preserve the actual hyperlink separately.
+    var richLink = block.links[i][0];
+    row.link = (richLink && richLink.getLinkUrl()) || row.link;
     return row;
   });
-  return { ok: true, rows: rows };
+  return { ok: true, protocol_version: 2, rows: rows };
+}
+
+// Read-only locator: submitted rows above New RFQs move the section down over time.
+// Require one exact header in a bounded window; never infer an insertion location.
+// The legacy write locator above deliberately retains its original strict guard.
+function findReadBlock_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(STATUS_BOARD_SHEET_NAME);
+  if (!sheet) return { ok: false, error: "structure_error", message: "Active tab not found." };
+  var height = Math.min(sheet.getMaxRows(), 500);
+  var values = sheet.getRange(1, 1, height, COLUMN_ORDER.length).getDisplayValues();
+  var columns = readColumns_(values[1] || []);
+  if (!columns) {
+    return { ok: false, error: "structure_error", message: "Unrecognized Status Board column headers in row 2." };
+  }
+  var headers = [];
+  values.forEach(function (row, i) {
+    if (String(row[0]).trim() === NEW_RFQS_HEADER_TEXT) headers.push(i);
+  });
+  if (headers.length !== 1) {
+    return { ok: false, error: "structure_error", message: "Expected exactly one New RFQs header within first 500 rows." };
+  }
+  var start = headers[0] + 1;
+  for (var i = start; i < Math.min(values.length, start + SEARCH_WINDOW_ROWS); i++) {
+    if (boundaryMarkerIn(values[i])) {
+      return { ok: false, error: "structure_error", message: "Section boundary reached before blank separator." };
+    }
+    if (values[i].every(function (cell) { return String(cell).trim() === ""; })) {
+      return {
+        ok: true, headerRow: start, columns: columns, existingRows: values.slice(start, i),
+        links: i === start ? [] : sheet.getRange(start + 1, columns[LINK_KEY] + 1, i - start, 1).getRichTextValues()
+      };
+    }
+  }
+  return { ok: false, error: "structure_error", message: "No blank separator within bounded New RFQs read window." };
+}
+
+// Verified live sheet has Notes/Submitted/Link in M/N/O, with no Go-bys.
+// Accept only the complete known 15- or 16-column header contract; never guess
+// from data, shift values into the wrong fields, or alter the legacy write path.
+function readColumns_(header) {
+  var labels = ["dateadded", "duedate", "duetimecst", "clientprojectlocation",
+    "rfqtitle", "digitaloption", "standardform", "submityorn", "datesubmitted",
+    "importance13", "quality13", "probability13", "gobys", "notes", "submittedyn", "link"];
+  var normalized = header.map(function (cell) {
+    return String(cell).toLowerCase().replace(/[^a-z0-9]/g, "");
+  });
+  var withGoBys = normalized[12] === "gobys";
+  var keys = COLUMN_ORDER.filter(function (key) { return withGoBys || key !== "go_bys"; });
+  var expected = labels.filter(function (label) { return withGoBys || label !== "gobys"; });
+  if (expected.some(function (label, i) { return normalized[i] !== label; }) ||
+      normalized.slice(expected.length).some(function (label) { return label !== ""; })) return null;
+  var columns = {};
+  keys.forEach(function (key, i) { columns[key] = i; });
+  return columns;
 }
 
 function isBlankRow(row) {

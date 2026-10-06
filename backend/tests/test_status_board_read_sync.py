@@ -146,15 +146,15 @@ def test_is_yes_normalizes_common_spellings():
 
 # --- 4-tier Opportunity matching, exact preference order ------------------------------
 
-def test_tier1_sync_relationship_matches_an_exact_sheet_row_number(db):
-    opp = _opportunity(db, title="Tier 1 Match")
+def test_tier1_sync_relationship_requires_corroborating_identity(db):
+    opp = _opportunity(db, title="Tier 1 Match", source_url="https://example.test/tier1")
     db.add(StatusBoardSync(
         opportunity_id=opp.id, status=StatusBoardSyncStatus.SYNCED, sheet_row_number=40,
     ))
     db.flush()
     synced_by_row = {40: db.execute(select(StatusBoardSync)).scalars().one()}
 
-    opportunity_id, method = _match_opportunity(db, {"link": None, "rfq_title": "Something Else"}, 40, synced_by_row)
+    opportunity_id, method = _match_opportunity(db, {"link": opp.source_url, "rfq_title": "Tier 1 Match"}, 40, synced_by_row)
     assert opportunity_id == opp.id
     assert method == StatusBoardMatchMethod.SYNC_RELATIONSHIP
 
@@ -219,7 +219,7 @@ def _patch_fake(monkeypatch, fake: FakeAppsScript):
 
 
 def test_app_created_board_row_reads_back_correctly(db, monkeypatch):
-    opp = _opportunity(db, title="App-Synced Opportunity")
+    opp = _opportunity(db, title="App-Synced Opportunity", source_url=_fields()["link"])
     db.add(StatusBoardSync(opportunity_id=opp.id, status=StatusBoardSyncStatus.SYNCED, sheet_row_number=36 + 1))
     db.flush()
 
@@ -271,9 +271,9 @@ def test_submitted_status_is_normalized_and_flagged(db, monkeypatch):
 
 
 def test_due_soon_and_past_due_are_correctly_bucketed(client, db, monkeypatch):
-    soon = (TODAY + timedelta(days=10)).strftime("%-m/%-d/%Y")
-    past = (TODAY - timedelta(days=5)).strftime("%-m/%-d/%Y")
-    far = (TODAY + timedelta(days=200)).strftime("%-m/%-d/%Y")
+    soon = (TODAY + timedelta(days=10)).strftime("%m/%d/%Y")
+    past = (TODAY - timedelta(days=5)).strftime("%m/%d/%Y")
+    far = (TODAY + timedelta(days=200)).strftime("%m/%d/%Y")
     fake = FakeAppsScript(data_rows=[
         _fields(rfq_title="Due Soon Item", due_date=soon, link="https://example.com/a"),
         _fields(rfq_title="Past Due Item", due_date=past, submitted_y_n="", link="https://example.com/b"),
@@ -290,7 +290,7 @@ def test_due_soon_and_past_due_are_correctly_bucketed(client, db, monkeypatch):
 
 
 def test_past_due_excludes_already_submitted_rows(client, db, monkeypatch):
-    past = (TODAY - timedelta(days=5)).strftime("%-m/%-d/%Y")
+    past = (TODAY - timedelta(days=5)).strftime("%m/%d/%Y")
     fake = FakeAppsScript(data_rows=[_fields(rfq_title="Submitted Already", due_date=past, submitted_y_n="Y")])
     _patch_fake(monkeypatch, fake)
     refresh_status_board_cache(db)
@@ -398,8 +398,8 @@ def test_every_status_board_count_field_is_covered_by_this_test_file():
 
 @pytest.mark.parametrize("count_field,filter_name", sorted(_COUNT_FIELD_TO_FILTER.items()))
 def test_dashboard_count_matches_status_board_route_count(client, db, monkeypatch, count_field, filter_name):
-    soon = (TODAY + timedelta(days=5)).strftime("%-m/%-d/%Y")
-    past = (TODAY - timedelta(days=3)).strftime("%-m/%-d/%Y")
+    soon = (TODAY + timedelta(days=5)).strftime("%m/%d/%Y")
+    past = (TODAY - timedelta(days=3)).strftime("%m/%d/%Y")
     fake = FakeAppsScript(data_rows=[
         _fields(rfq_title="Row A", submit_y_n="Y", due_date=soon, link="https://example.com/a"),
         _fields(rfq_title="Row B", submitted_y_n="Y", due_date=past, link="https://example.com/b"),

@@ -18,8 +18,9 @@ not wipe previously synchronized board state."
 **Opportunity matching, in the exact preference order the product spec requires** (see
 StatusBoardMatchMethod in app/models/enums.py for what each tier means and why
 SYNC_RELATIONSHIP alone means "app-originated"):
-1. SYNC_RELATIONSHIP: an exact StatusBoardSync(status=SYNCED).sheet_row_number hit --
-   literal proof this app wrote this exact row.
+1. SYNC_RELATIONSHIP: a stored row relationship corroborated by the unique identity
+   match below. Row numbers move when people insert, delete or submit rows; alone
+   they cannot identify an opportunity.
 2. SOURCE_URL: the row's Link matches an Opportunity.source_url.
 3. SOLICITATION_NUMBER: a leading "(IDENTIFIER) Title..." token in the row's RFQ Title
    (the same shape COREWORKS listings themselves use, see
@@ -46,6 +47,7 @@ from app.models.agency import Agency
 from app.models.enums import StatusBoardMatchMethod, StatusBoardSyncStatus
 from app.models.opportunity import Opportunity, StatusBoardCacheState, StatusBoardRow, StatusBoardSync
 from app.services import status_board_webhook_client as webhook_client
+from app.services.status_board_sync import FIELD_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -81,25 +83,31 @@ def _normalize(value: str | None) -> str:
 def _match_opportunity(
     db: Session, row: dict, sheet_row_number: int, synced_by_row: dict[int, StatusBoardSync],
 ) -> tuple:
+    opportunity_id, method = _match_by_identity(db, row)
     sync = synced_by_row.get(sheet_row_number)
-    if sync is not None:
-        return sync.opportunity_id, StatusBoardMatchMethod.SYNC_RELATIONSHIP
+    if opportunity_id is not None and sync is not None and sync.opportunity_id == opportunity_id:
+        return opportunity_id, StatusBoardMatchMethod.SYNC_RELATIONSHIP
+    return opportunity_id, method
+
+
+def _match_by_identity(db: Session, row: dict) -> tuple:
+    """Ambiguous shared bulletin URLs/identifiers must not choose an arbitrary row."""
 
     link = (row.get("link") or "").strip()
     if link:
-        opp = db.execute(select(Opportunity).where(Opportunity.source_url == link)).scalars().first()
-        if opp is not None:
-            return opp.id, StatusBoardMatchMethod.SOURCE_URL
+        candidates = db.execute(select(Opportunity).where(Opportunity.source_url == link)).scalars().all()
+        if len(candidates) == 1:
+            return candidates[0].id, StatusBoardMatchMethod.SOURCE_URL
 
     title = row.get("rfq_title") or ""
     identifier_match = _LEADING_IDENTIFIER.match(title)
     if identifier_match is not None:
         identifier = identifier_match.group(1).strip()
-        opp = db.execute(
+        candidates = db.execute(
             select(Opportunity).where(Opportunity.solicitation_number == identifier)
-        ).scalars().first()
-        if opp is not None:
-            return opp.id, StatusBoardMatchMethod.SOLICITATION_NUMBER
+        ).scalars().all()
+        if len(candidates) == 1:
+            return candidates[0].id, StatusBoardMatchMethod.SOLICITATION_NUMBER
 
     due = row.get("_due_date_parsed")
     if title and due is not None:
@@ -107,6 +115,7 @@ def _match_opportunity(
         candidates = db.execute(
             select(Opportunity).where(Opportunity.proposal_due_at.isnot(None))
         ).scalars().all()
+        matches = []
         for opp in candidates:
             if _normalize(opp.title) != _normalize(title):
                 continue
@@ -120,9 +129,11 @@ def _match_opportunity(
             opp_agency = db.get(Agency, opp.agency_id) if opp.agency_id else None
             opp_location = ", ".join(filter(None, [opp.location_city, opp.location_state]))
             opp_client_parts = [p for p in (opp_agency.name if opp_agency else None, opp_location) if p]
-            if client and opp_client_parts and not any(_normalize(p) in client or client in _normalize(p) for p in opp_client_parts):
+            if not client or not opp_client_parts or not any(_normalize(p) in client or client in _normalize(p) for p in opp_client_parts):
                 continue
-            return opp.id, StatusBoardMatchMethod.TITLE_CLIENT_DUE_DATE
+            matches.append(opp)
+        if len(matches) == 1:
+            return matches[0].id, StatusBoardMatchMethod.TITLE_CLIENT_DUE_DATE
 
     return None, StatusBoardMatchMethod.UNMATCHED
 
@@ -134,6 +145,28 @@ def _get_or_create_cache_state(db: Session) -> StatusBoardCacheState:
         db.add(state)
         db.flush()
     return state
+
+
+def _validate_rows(result: dict) -> list[dict]:
+    """Validate the entire snapshot before any cache deletion, never skip bad rows."""
+    if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(result.get("rows"), list):
+        raise ValueError("Status Board read returned an invalid snapshot envelope.")
+    seen = set()
+    for row in result["rows"]:
+        if not isinstance(row, dict):
+            raise ValueError("Status Board read returned a non-object row.")
+        number = row.get("sheet_row_number")
+        if type(number) is not int or number < 1 or number in seen:
+            raise ValueError("Status Board read returned a missing, invalid or duplicate row number.")
+        seen.add(number)
+        for key in FIELD_KEYS:
+            value = row.get(key)
+            if key not in row or (value is not None and not isinstance(value, str)):
+                raise ValueError(f"Status Board read returned an invalid {key} field.")
+            limit = getattr(StatusBoardRow.__table__.columns[key].type, "length", None)
+            if limit and value is not None and len(value) > limit:
+                raise ValueError(f"Status Board read returned an oversized {key} field.")
+    return result["rows"]
 
 
 def refresh_status_board_cache(db: Session) -> StatusBoardCacheState:
@@ -153,7 +186,7 @@ def refresh_status_board_cache(db: Session) -> StatusBoardCacheState:
         logger.warning("Status Board read-sync failed: %s", exc)
         return state
 
-    if not result.get("ok"):
+    if isinstance(result, dict) and result.get("ok") is False:
         state.last_error = "{}: {}".format(
             result.get("error", "error"), result.get("message", "Status Board read reported a failure."),
         )
@@ -161,9 +194,10 @@ def refresh_status_board_cache(db: Session) -> StatusBoardCacheState:
         logger.warning("Status Board read-sync reported failure: %s", state.last_error)
         return state
 
-    raw_rows = result.get("rows")
-    if not isinstance(raw_rows, list):
-        state.last_error = f"Status Board read returned a malformed response (no 'rows' list): {result}"
+    try:
+        raw_rows = _validate_rows(result)
+    except ValueError as exc:
+        state.last_error = str(exc)
         db.commit()
         logger.warning("Status Board read-sync malformed response: %s", state.last_error)
         return state
@@ -181,8 +215,6 @@ def refresh_status_board_cache(db: Session) -> StatusBoardCacheState:
     new_rows = []
     for raw in raw_rows:
         sheet_row_number = raw.get("sheet_row_number")
-        if sheet_row_number is None:
-            continue  # malformed entry from the script -- never fabricate a row number
         due_parsed = _parse_sheet_date(raw.get("due_date"))
         date_added_parsed = _parse_sheet_date(raw.get("date_added"))
         match_row = {**raw, "_due_date_parsed": due_parsed}

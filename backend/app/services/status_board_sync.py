@@ -77,7 +77,7 @@ def _format_time(dt: datetime | None) -> str:
     if dt is None:
         return ""
     local = dt.astimezone(CENTRAL_TZ)
-    return local.strftime("%-I:%M %p")
+    return local.strftime("%I:%M %p").lstrip("0")
 
 
 def _client_project_location(opp: Opportunity, agency: Agency | None) -> str:
