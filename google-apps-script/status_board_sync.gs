@@ -411,7 +411,9 @@ function preparePoiSubmitIdentities() {
         if (!ids[number]) throw new Error("Ambiguous existing identity; manual review required.");
         return;
       }
-      block.sheet.getRange(number, 1, 1, block.sheet.getMaxColumns())
+      // Unbounded A1 row notation is required for ROW metadata. A numeric
+      // full-grid-width range is still a bounded rectangle in Apps Script.
+      block.sheet.getRange(number + ":" + number)
         .addDeveloperMetadata(POI_RECORD_KEY, Utilities.getUuid());
     });
   } finally { lock.releaseLock(); }
