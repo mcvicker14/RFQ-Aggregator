@@ -21,12 +21,18 @@ function fixture({ enabled = true, advanced = true, withGoBys = false } = {}) {
       getValue: () => m.value, getId: () => m.id,
       getLocation: () => ({ getRow: () => ({ getRow: () => m.number }) })
     })) }) }),
-    getRange: (r, c, h, w) => ({
+    getRange: (r, c, h, w) => {
+      const entireRow = typeof r === 'string' && /^(\d+):\1$/.test(r);
+      if (entireRow) { r = Number(r.split(':')[0]); c = 1; h = 1; w = 29; }
+      return ({
       getDisplayValues: () => grid.slice(r - 1, r - 1 + h).map(row => row.slice(c - 1, c - 1 + w)),
       getFormulas: () => formulas.slice(r - 1, r - 1 + h).map(row => row.slice(c - 1, c - 1 + w)),
       getRichTextValues: () => grid.slice(r - 1, r - 1 + h).map(row => [{ getLinkUrl: () => row[withGoBys ? 15 : 14] || null }]),
-      addDeveloperMetadata: (_, value) => { metadataWrites++; ids.push({ number: r, value, id: 103 }); }
-    })
+      addDeveloperMetadata: (_, value) => {
+        if (!entireRow) throw new Error('Adding developer metadata to arbitrary ranges is not supported');
+        metadataWrites++; ids.push({ number: r, value, id: 103 });
+      }
+    }); }
   };
   const ctx = {
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'STATUS_BOARD_WEBHOOK_SECRET' ? 'test-secret' : enabled ? 'true' : null }) },
@@ -55,7 +61,7 @@ function fixture({ enabled = true, advanced = true, withGoBys = false } = {}) {
   function post(payload) { return JSON.parse(JSON.stringify(ctx.handlePost({ postData: { contents: JSON.stringify({ secret: 'test-secret', ...payload }) } }))); }
   const first = post({ action: 'read' }).rows[0];
   const edit = { action: 'set_submit', request_id: randomUUID(), source_record_id: first.source_record_id, expected_revision: first.source_revision, expected_submit: first.submit_y_n, value: 'Y' };
-  return { post, edit, grid, ids, formulas, writes, ctx, metadataWrites: () => metadataWrites,
+  return { post, edit, grid, ids, formulas, writes, ctx, sheet, metadataWrites: () => metadataWrites,
     beforeWrite: fn => { beforeWrite = fn; }, afterWrite: fn => { afterWrite = fn; } };
 }
 
@@ -123,4 +129,10 @@ test('concurrent Notes or formula changes after write produce uncertainty, never
 test('identities are never assigned on read; manual helper adds only missing metadata', () => {
   const f = fixture(); f.ids.splice(0, 1); f.post({ action: 'read' }); assert.equal(f.metadataWrites(), 0);
   const before = structuredClone(f.grid); f.ctx.preparePoiSubmitIdentities(); assert.equal(f.metadataWrites(), 1); assert.deepEqual(f.grid, before);
+});
+
+test('numeric full-width grid range is not an unbounded entire-row metadata location', () => {
+  const f = fixture();
+  assert.throws(() => f.sheet.getRange(39, 1, 1, 29).addDeveloperMetadata('test', randomUUID()), /arbitrary ranges/);
+  assert.equal(f.metadataWrites(), 0);
 });
