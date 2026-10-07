@@ -66,7 +66,7 @@ function runPoiSyntheticAcceptance() {
     sheet.moveRows(sheet.getRange(41, 1, 1, sheet.getMaxColumns()), 40); SpreadsheetApp.flush();
     first(); sheet.getRange(40, 8).setValue('N');
     row = first(); var otherRow = rows().filter(function (r) { return r.rfq_title === 'SYNTHETIC POI RFQ B'; })[0];
-    sheet.getRange(otherRow.sheet_row_number, 1, 1, sheet.getMaxColumns()).addDeveloperMetadata(POI_RECORD_KEY, row.source_record_id);
+    sheet.getRange(otherRow.sheet_row_number + ':' + otherRow.sheet_row_number).addDeveloperMetadata(POI_RECORD_KEY, row.source_record_id);
     rejected(edit(row, 'Y'), 'duplicate identity rejected');
     sheet.createDeveloperMetadataFinder().withKey(POI_RECORD_KEY).find().forEach(function (m) {
       if (m.getValue() === row.source_record_id && m.getLocation().getRow().getRow() === otherRow.sheet_row_number) m.remove();
