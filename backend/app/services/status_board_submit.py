@@ -53,7 +53,7 @@ def set_board_submit(db: Session, actor: User, edit: StatusBoardSubmitEdit) -> S
             "The sheet changed or the save is unconfirmed. Refresh and inspect Google Sheets before saving again.")
     state = refresh_status_board_cache(db)
     checked = db.execute(select(StatusBoardRow).where(StatusBoardRow.source_record_id == record_id)).scalars().all()
-    if state.last_error or len(checked) != 1 or checked[0].submit_y_n != edit.value or \
+    if state.last_error or len(checked) != 1 or (checked[0].submit_y_n or "") != edit.value or \
             checked[0].source_revision != result.get("source_revision"):
         audit.status = "uncertain"
         db.commit()

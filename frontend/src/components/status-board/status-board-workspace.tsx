@@ -28,12 +28,13 @@ export function StatusBoardWorkspace({ initialFilter = "all_active" }: { initial
   const [order, setOrder] = useState<"asc" | "desc">("asc");
   const [full, setFull] = useState(false);
   const [editing, setEditing] = useState<StatusBoardRow | null>(null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState<"N" | "Y" | "" | null>(null);
   const [saving, setSaving] = useState(false);
   const [now, setNow] = useState(Date.now());
   const controls = useRef({ filter, client, sort, order });
   controls.current = { filter, client, sort, order };
   const busy = useRef(false), editRef = useRef<StatusBoardRow | null>(null), alive = useRef(true), sequence = useRef(0);
+  const saveBusy = useRef(false);
   editRef.current = editing;
   const canRefresh = ["administrator", "executive", "business_development"].includes(user?.role ?? "");
   const refreshAllowed = useRef(canRefresh); refreshAllowed.current = canRefresh;
@@ -77,14 +78,15 @@ export function StatusBoardWorkspace({ initialFilter = "all_active" }: { initial
   const rows = (data?.rows ?? []).filter(row => !search || [row.rfq_title, row.client_project_location, row.notes].some(v => v?.toLowerCase().includes(search.toLowerCase())));
 
   async function save() {
-    if (!editing?.source_record_id || !editing.source_revision || (draft !== "Y" && draft !== "N") || saving) return;
+    if (!editing?.source_record_id || !editing.source_revision || draft === null || draft === (editing.submit_y_n ?? "") || !editable || writeError || saveBusy.current) return;
+    saveBusy.current = true;
     setSaving(true); setNotice(null);
     try {
       await statusBoardApi.setSubmit({ request_id: crypto.randomUUID(), source_record_id: editing.source_record_id,
         expected_revision: editing.source_revision, expected_submit: editing.submit_y_n ?? "", value: draft });
-      setNotice(`Submit = ${draft} confirmed in Google Sheets.`); setEditing(null); await load();
+      setNotice(draft === "" ? "Blank Submit confirmed in Google Sheets." : `Submit = ${draft} confirmed in Google Sheets.`); setEditing(null); await load();
     } catch (e) { setWriteError((e as Error).message); setEditing(null); }
-    finally { setSaving(false); }
+    finally { saveBusy.current = false; setSaving(false); }
   }
 
   return <section className="min-w-0 space-y-4" aria-labelledby="board-heading">
@@ -118,14 +120,18 @@ export function StatusBoardWorkspace({ initialFilter = "all_active" }: { initial
     </div></details>
     {editing && <form onSubmit={e => { e.preventDefault(); void save(); }} className="rounded-md border border-primary/30 bg-card p-4" aria-label="Edit Submit decision">
       <p className="mb-3 text-sm font-medium">{editing.rfq_title}</p>
-      <div className="flex flex-wrap items-center gap-2"><label htmlFor="submit-decision" className="text-sm">Submit? (currently {editing.submit_y_n || "blank"})</label>
-        <Input id="submit-decision" autoFocus maxLength={1} value={draft} onChange={e => setDraft(e.target.value.toUpperCase())} className="w-16" disabled={saving} />
-        <Button size="sm" type="submit" disabled={saving || (draft !== "Y" && draft !== "N")}>{saving ? "Confirming…" : "Save to sheet"}</Button>
+      <div className="flex flex-wrap items-center gap-2"><fieldset disabled={saving} className="flex flex-wrap items-center gap-3">
+          <legend className="mb-2 text-sm">Submit? (currently {editing.submit_y_n || "blank"})</legend>
+          {(["N", "Y", ...(["N", "Y"].includes(editing.submit_y_n ?? "") ? [""] : [])] as ("N" | "Y" | "")[]).map((value, index) => <label key={value || "blank"} className="flex cursor-pointer items-center gap-2 rounded-md border border-input px-3 py-2 text-sm">
+            <input type="radio" name="submit-decision" autoFocus={index === 0} value={value} checked={draft === value} onChange={() => setDraft(value)} />{value || "Blank"}
+          </label>)}
+        </fieldset>
+        <Button size="sm" type="submit" disabled={saving || !editable || !!writeError || draft === null || draft === (editing.submit_y_n ?? "")}>{saving ? "Confirming…" : "Save to sheet"}</Button>
         <Button size="sm" type="button" variant="ghost" disabled={saving} onClick={() => setEditing(null)}>Cancel</Button></div>
       <p className="mt-2 text-xs text-muted-foreground">Only Submit? changes. Detected conflicts stop the save. No automatic retry.</p>
     </form>}
     {!data ? <LoadingState label="Loading Status Board…" /> : <StatusBoardTable rows={rows} compact={!full}
       editEnabled={editable && !writeError}
-      onEdit={canDecide && data.submit_edits_enabled && !editing ? row => { setEditing({ ...row }); setDraft(""); setNotice(null); } : undefined} />}
+      onEdit={canDecide && data.submit_edits_enabled && !editing ? row => { setEditing({ ...row }); setDraft(null); setNotice(null); } : undefined} />}
   </section>;
 }

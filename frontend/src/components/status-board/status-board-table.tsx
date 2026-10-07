@@ -29,8 +29,8 @@ export function StatusBoardTable({ rows, compact = false, onEdit, editEnabled = 
     const usable = editEnabled && !!row.source_record_id && !!row.source_revision && !row.is_submitted_y;
     return <div className="flex items-center gap-2"><span className={row.is_submit_y ? "font-semibold text-primary" : "text-muted-foreground"}>{row.submit_y_n || "—"}</span>
       {onEdit && <button type="button" disabled={!usable} onClick={() => onEdit(row)}
-        aria-label={`Edit Submit for ${row.rfq_title}`} title={usable ? "Type Y or N" : "Refresh and review the sheet; source identity setup may be required"}
-        className="rounded px-2 py-1 text-xs text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:text-muted-foreground">Edit</button>}</div>;
+        aria-label={`${row.submit_y_n ? "Change" : "Choose"} Submit for ${row.rfq_title}`} title={usable ? "Choose a Submit decision" : "Refresh and review the sheet; source identity setup may be required"}
+        className="rounded px-2 py-1 text-xs text-primary hover:bg-secondary disabled:cursor-not-allowed disabled:text-muted-foreground">{row.submit_y_n ? "Change" : "Choose"}</button>}</div>;
   }
 
   if (compact) return <>

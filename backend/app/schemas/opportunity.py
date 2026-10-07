@@ -197,14 +197,14 @@ class StatusBoardSubmitEdit(BaseModel):
     source_record_id: UUID
     expected_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     expected_submit: str = Field(max_length=10)
-    value: Literal["Y", "N"]
+    value: Literal["Y", "N", ""]
 
 
 class StatusBoardSubmitResult(BaseModel):
     request_id: str
     status: Literal["confirmed"]
     source_record_id: str
-    value: Literal["Y", "N"]
+    value: Literal["Y", "N", ""]
 
 
 class StatusBoardCountsRead(ORMModel):

@@ -11,7 +11,7 @@
  *     existing manual rows never touched by this app) as JSON, for the backend's own
  *     Status Board page to display and poll. Read-only: never writes anything.
  *   - {secret, action:"set_submit", request_id, source_record_id,
- *      expected_revision, expected_submit, value:"Y"|"N"} - optional owner-driven
+ *      expected_revision, expected_submit, value:"Y"|"N"|""} - optional owner-driven
  *     edit of H only. Disabled until separate reviewed activation. Requires row
  *     developer metadata and the Advanced Sheets service. No credential changes
  *     or service/scope activation is performed by this source file.
@@ -344,8 +344,8 @@ function setSubmit_(body) {
   if (Object.keys(body).some(function (key) { return allowed.indexOf(key) < 0; }) ||
       !/^[a-f0-9-]{36}$/.test(body.source_record_id || "") || !/^[a-f0-9-]{36}$/.test(body.request_id || "") ||
       !/^[a-f0-9]{64}$/.test(body.expected_revision || "") || typeof body.expected_submit !== "string" ||
-      (body.value !== "Y" && body.value !== "N"))
-    return { ok: false, error: "bad_request", message: "Only an explicit Y or N Submit edit is supported." };
+      (body.value !== "Y" && body.value !== "N" && body.value !== ""))
+    return { ok: false, error: "bad_request", message: "Only an explicit Y, N or blank Submit choice is supported." };
   var before = readNewRfqsRows_();
   if (!before.ok) return before;
   var matches = before.rows.filter(function (r) { return r.source_record_id === body.source_record_id; });

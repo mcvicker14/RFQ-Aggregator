@@ -55,6 +55,23 @@ def test_confirmed_edit_has_durable_actor_audit_and_does_not_change_opportunitie
     assert db.execute(select(func.count()).select_from(Opportunity)).scalar() == before
 
 
+@pytest.mark.parametrize("old", ["N", "Y"])
+def test_explicit_blank_clear_is_confirmed_audited_and_not_replayed(db, board, old):
+    actor, edit, row, calls = board
+    row["submit_y_n"] = old
+    refresh_status_board_cache(db)
+    edit = edit.model_copy(update={"expected_submit": old, "value": ""})
+    result = set_board_submit(db, actor, edit)
+    assert result.value == "" and result.status == "confirmed"
+    assert calls[0]["value"] == "" and calls[0]["expected_submit"] == old
+    audit = db.execute(select(StatusBoardEdit).where(StatusBoardEdit.request_id == str(edit.request_id))).scalar_one()
+    assert (audit.old_value, audit.new_value, audit.status) == (old, "", "confirmed")
+    cached = db.execute(select(StatusBoardRow).where(StatusBoardRow.source_record_id == row["source_record_id"])).scalar_one()
+    assert not cached.submit_y_n and not cached.is_submit_y and cached.notes == "Do not touch"
+    set_board_submit(db, actor, edit)
+    assert len(calls) == 1
+
+
 def test_exact_replay_returns_prior_ack_without_second_sheet_write(db, board):
     actor, edit, _, calls = board
     set_board_submit(db, actor, edit); set_board_submit(db, actor, edit)
@@ -135,7 +152,7 @@ def test_route_validation_rejects_other_fields_or_values(db, board):
     app.dependency_overrides[get_db] = lambda: db; app.dependency_overrides[get_current_user] = lambda: actor
     try:
         client = TestClient(app)
-        for extra in [{"value": "yes"}, {"value": "=1"}, {"notes": "overwrite"}, {"sheet_row_number": 39}]:
+        for extra in [{"value": "yes"}, {"value": "=1"}, {"value": None}, {"notes": "overwrite"}, {"sheet_row_number": 39}]:
             assert client.patch("/api/status-board/submit", json={**edit.model_dump(mode="json"), **extra}).status_code == 422
         assert not calls
     finally: app.dependency_overrides.clear()

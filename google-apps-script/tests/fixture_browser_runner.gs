@@ -49,7 +49,7 @@ function runPoiSyntheticAcceptance() {
     check(rows().length === 2 && rows().every(function (r) { return /^SYNTHETIC POI RFQ [AB]$/.test(r.rfq_title); }), 'exactly two fake RFQs');
     preparePoiSubmitIdentities(); same(before, 'metadata setup changes no cells/formulas/links/formatting');
     check(rows().every(function (r) { return r.source_record_id && /^[a-f0-9]{64}$/.test(r.source_revision); }), 'both identities and revisions available');
-    ['Y', 'N'].forEach(function (value) {
+    ['Y', '', 'N'].forEach(function (value) {
       var row = first(), prior = snapshot(), result = post(edit(row, value));
       check(result.ok === true && result.status === 'confirmed' && result.value === value, 'confirmed ' + value);
       same(prior, 'only H changes for ' + value, row.sheet_row_number, value);

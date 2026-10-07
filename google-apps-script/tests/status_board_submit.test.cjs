@@ -45,7 +45,7 @@ function fixture({ enabled = true, advanced = true, withGoBys = false } = {}) {
     assert.equal(body.valueInputOption, 'RAW'); assert.equal(body.data.length, 1);
     const data = body.data[0], values = data.values[0];
     assert.deepEqual(JSON.parse(JSON.stringify(values.slice(0, 7))), Array(7).fill(null));
-    assert.equal(values.length, 8); assert.match(values[7], /^[YN]$/);
+    assert.equal(values.length, 8); assert.match(values[7], /^[YN]?$/);
     beforeWrite();
     const target = ids.find(m => m.id === data.dataFilter.developerMetadataLookup.metadataId);
     if (!target) return { totalUpdatedCells: 0 };
@@ -114,8 +114,17 @@ test('formula Submit cell is never replaced', () => {
   const f = fixture(); f.formulas[38][7] = '=IF(A1,"N","Y")'; f.edit.expected_revision = f.post({ action: 'read' }).rows[0].source_revision;
   assert.equal(f.post(f.edit).error, 'conflict'); assert.equal(f.writes.length, 0);
 });
-for (const payload of [{ value: '=' }, { value: 'yes' }, { fields: { notes: 'bad' } }, { value: '' }]) test(`invalid edit ${JSON.stringify(payload)} never writes`, () => {
+for (const payload of [{ value: '=' }, { value: 'yes' }, { fields: { notes: 'bad' } }, { value: null }, { value: undefined }]) test(`invalid edit ${JSON.stringify(payload)} never writes`, () => {
   const f = fixture(); assert.equal(f.post({ ...f.edit, ...payload }).error, 'bad_request'); assert.equal(f.writes.length, 0);
+});
+
+for (const withGoBys of [false, true]) for (const old of ['N', 'Y']) test(`explicit blank clears only H from ${old}, schema ${withGoBys ? 16 : 15}`, () => {
+  const f = fixture({ withGoBys }); f.grid[38][7] = old;
+  const row = f.post({ action: 'read' }).rows[0], before = structuredClone(f.grid);
+  const result = f.post({ ...f.edit, expected_submit: old, expected_revision: row.source_revision, value: '' });
+  assert.equal(result.status, 'confirmed'); assert.equal(result.value, '');
+  before[38][7] = ''; assert.deepEqual(f.grid, before);
+  assert.equal(f.writes.length, 1); assert.equal(f.post({ action: 'read' }).rows[0].submit_y_n, '');
 });
 test('unknown schema prevents edit', () => {
   const f = fixture(); f.grid[1][7] = 'Unknown'; assert.equal(f.post(f.edit).error, 'structure_error'); assert.equal(f.writes.length, 0);
