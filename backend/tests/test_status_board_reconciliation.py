@@ -146,7 +146,7 @@ def test_board_endpoint_authenticates_without_intake_calls(monkeypatch, secret, 
     from app.main import app
     from app.db.session import get_db
     from app.api.routes import status_board
-    monkeypatch.setattr(get_settings(), "SCHEDULED_SYNC_SECRET", "existing-test-secret")
+    monkeypatch.setattr(get_settings(), "STATUS_BOARD_RECONCILIATION_SECRET", "existing-test-secret")
     calls = []
     monkeypatch.setattr(status_board, "run_due_board_reconciliation", lambda _: calls.append(True) or {"reason": "completed", "slot_at": None, "last_error": None})
     app.dependency_overrides[get_db] = lambda: object()
@@ -164,7 +164,7 @@ def test_board_endpoint_reports_failure_and_forbids_decision_payloads(monkeypatc
     from app.main import app
     from app.db.session import get_db
     from app.api.routes import status_board
-    monkeypatch.setattr(get_settings(), "SCHEDULED_SYNC_SECRET", "existing-test-secret")
+    monkeypatch.setattr(get_settings(), "STATUS_BOARD_RECONCILIATION_SECRET", "existing-test-secret")
     calls = []
     monkeypatch.setattr(status_board, "run_due_board_reconciliation", lambda _: calls.append(True) or {"reason": "failed", "slot_at": None, "last_error": "identity validation failed"})
     app.dependency_overrides[get_db] = lambda: object()
@@ -173,5 +173,34 @@ def test_board_endpoint_reports_failure_and_forbids_decision_payloads(monkeypatc
         assert client.post("/api/status-board/reconciliation-check", json={"secret": "existing-test-secret"}).status_code == 503
         assert client.post("/api/status-board/reconciliation-check", json={"secret": "existing-test-secret", "value": "Y"}).status_code == 422
         assert calls == [True]
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("secret", ["intake-only-test-secret", "non-ascii-é"])
+def test_intake_credential_or_nonascii_input_cannot_authorize_board_reconciliation(monkeypatch, secret):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db.session import get_db
+    from app.api.routes import status_board
+    monkeypatch.setattr(get_settings(), "STATUS_BOARD_RECONCILIATION_SECRET", "board-only-test-secret")
+    monkeypatch.setattr(get_settings(), "SCHEDULED_SYNC_SECRET", "intake-only-test-secret")
+    monkeypatch.setattr(status_board, "run_due_board_reconciliation", lambda _: pytest.fail("unauthorized board call"))
+    app.dependency_overrides[get_db] = lambda: object()
+    try:
+        assert TestClient(app).post("/api/status-board/reconciliation-check", json={"secret": secret}).status_code == 401
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_missing_board_credential_fails_closed_even_with_an_intake_credential(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.db.session import get_db
+    monkeypatch.setattr(get_settings(), "STATUS_BOARD_RECONCILIATION_SECRET", None)
+    monkeypatch.setattr(get_settings(), "SCHEDULED_SYNC_SECRET", "intake-only-test-secret")
+    app.dependency_overrides[get_db] = lambda: object()
+    try:
+        assert TestClient(app).post("/api/status-board/reconciliation-check", json={"secret": "intake-only-test-secret"}).status_code == 503
     finally:
         app.dependency_overrides.clear()

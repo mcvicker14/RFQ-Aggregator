@@ -5,7 +5,9 @@ app/services/status_board_sync.py and its routes on opportunities.py/
 intelligence_items.py. Reconciliation assigns source metadata and replaces the cache;
 it never copies cached decisions back to the sheet.
 """
-from fastapi import APIRouter, Depends, Query, Response, status
+import hmac
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,7 +22,6 @@ from app.services.status_board_filters import STATUS_BOARD_FILTER_NAMES, apply_s
 from app.services.status_board_read_sync import refresh_status_board_cache
 from app.services.status_board_submit import set_board_submit
 from app.services.status_board_reconciliation import run_due_board_reconciliation
-from app.api.routes.scheduled_sync import _require_scheduled_sync_secret
 
 router = APIRouter(prefix="/api/status-board", tags=["status-board"])
 
@@ -33,8 +34,12 @@ class BoardReconciliationCheck(BaseModel):
 @router.post("/reconciliation-check")
 def check_board_reconciliation(payload: BoardReconciliationCheck, response: Response,
                                db: Session = Depends(get_db)):
-    """Machine check using the existing scheduler secret; no intake or decisions."""
-    _require_scheduled_sync_secret(payload)
+    """Dedicated board-only credential; no intake or decision-write authority."""
+    configured = get_settings().STATUS_BOARD_RECONCILIATION_SECRET
+    if not configured:
+        raise HTTPException(503, "Board reconciliation credential is not configured.")
+    if not payload.secret or not hmac.compare_digest(payload.secret.encode("utf-8"), configured.encode("utf-8")):
+        raise HTTPException(401, "Invalid or missing board reconciliation credential.")
     result = run_due_board_reconciliation(db)
     if result["reason"] == "failed":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE

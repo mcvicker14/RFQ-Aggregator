@@ -242,3 +242,28 @@ test('shared Script lock and missing Advanced Sheets service fail without writes
   const f = fixture(); f.locked(true); assert.equal(f.post({ action: 'reconcile' }).error, 'locked'); assert.equal(f.metadataWrites(), 0);
   const missing = fixture({ advanced: false }); assert.equal(missing.post({ action: 'reconcile' }).error, 'needs_configuration');
 });
+
+test('Advanced Sheets property enumeration order does not masquerade as a concurrent metadata change', () => {
+  const f = fixture(); f.ids.splice(1, 1);
+  const search = f.ctx.Sheets.Spreadsheets.DeveloperMetadata.search;
+  let calls = 0;
+  function reverseKeys(value) {
+    if (Array.isArray(value)) return value.map(reverseKeys);
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).reverse().map(([key, item]) => [key, reverseKeys(item)]));
+    return value;
+  }
+  f.ctx.Sheets.Spreadsheets.DeveloperMetadata.search = body => (++calls % 2 ? reverseKeys(search(body)) : search(body));
+  const before = structuredClone(f.grid), result = f.post({ action: 'reconcile' });
+  assert.equal(result.ok, true); assert.equal(result.identities_added, 1); assert.deepEqual(f.grid, before);
+});
+
+test('actual metadata value change between inventory and preflight still conflicts without writes', () => {
+  const f = fixture(); f.ids.splice(1, 1);
+  const search = f.ctx.Sheets.Spreadsheets.DeveloperMetadata.search; let calls = 0;
+  f.ctx.Sheets.Spreadsheets.DeveloperMetadata.search = body => {
+    if (++calls === 2) f.ids[0].value = randomUUID();
+    return search(body);
+  };
+  const result = f.post({ action: 'reconcile' });
+  assert.equal(result.error, 'conflict'); assert.equal(result.stage, 'identity_preflight'); assert.equal(f.metadataWrites(), 0);
+});

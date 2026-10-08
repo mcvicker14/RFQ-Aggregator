@@ -1,7 +1,7 @@
 """Four daily Central-time board snapshots, independent of intake scheduling.
 
-The separate board-only external check wakes Free Render, reusing the existing
-scheduler credential. An in-process check is a fallback, not a clock guarantee.
+The separate board-only external check wakes Free Render, using its own narrow
+machine credential. An in-process check is a fallback, not a clock guarantee.
 Delayed checks reconcile the latest
 due slot once; missed slots never replay old decisions or restore deleted rows.
 """

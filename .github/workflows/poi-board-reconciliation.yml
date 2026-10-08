@@ -36,11 +36,11 @@ jobs:
       - name: Reconcile the board only
         if: steps.window.outputs.due == 'true'
         env:
-          API_BASE_URL: ${{ secrets.SCHEDULED_SYNC_API_BASE_URL }}
-          SCHEDULED_SYNC_SECRET: ${{ secrets.SCHEDULED_SYNC_SECRET }}
+          API_BASE_URL: https://principal-oi-api.onrender.com
+          BOARD_RECONCILIATION_SECRET: ${{ secrets.STATUS_BOARD_RECONCILIATION_SECRET }}
         run: |
-          if [ -z "$API_BASE_URL" ] || [ -z "$SCHEDULED_SYNC_SECRET" ]; then
-            echo "Existing scheduler configuration is unavailable; no request sent."
+          if [ -z "$BOARD_RECONCILIATION_SECRET" ]; then
+            echo "Approved board scheduler credential is unavailable; no request sent."
             exit 1
           fi
           # Stream the credential from env to stdin; never print it or put it in
@@ -50,5 +50,5 @@ jobs:
             --connect-timeout 30 --max-time 180 --retry 2 --retry-delay 15 \
             --retry-all-errors --fail-with-body
           import json, os
-          print(json.dumps({"secret": os.environ["SCHEDULED_SYNC_SECRET"]}))
+          print(json.dumps({"secret": os.environ["BOARD_RECONCILIATION_SECRET"]}))
           PY

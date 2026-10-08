@@ -456,6 +456,16 @@ function poiSourceSnapshot_(block) {
     links: block.links.map(function (row) { return row.map(function (link) { return link && link.getLinkUrl(); }); }) });
 }
 
+function poiIdentitySnapshot_(inventory) {
+  // Advanced-service response objects have no stable property enumeration order.
+  // Compare the complete identity semantics, not incidental JSON key ordering.
+  return JSON.stringify(inventory.entries.map(function (metadata) {
+    var range = metadata.location.dimensionRange;
+    return [metadata.metadataId, metadata.metadataKey, metadata.metadataValue,
+      metadata.visibility || null, range.sheetId, range.dimension, range.startIndex, range.endIndex];
+  }));
+}
+
 // Tentative IDs are not exposed to POI until the whole operation is confirmed.
 // If a human moves/inserts a row during the batch, remove ONLY UUIDs generated
 // by this invocation (known absent from the preflight inventory). Never remove
@@ -509,9 +519,10 @@ function ensurePoiSubmitIdentities_() {
     // editing the sheet; revalidate before one atomic metadata-only batch, then
     // verify afterward. A detected race stops caching, never rewrites cells.
     var preflight = findReadBlock_();
-    if (!preflight.ok || poiSourceSnapshot_(preflight) !== before ||
-        JSON.stringify(strictPoiIdentityInventory_().entries) !== JSON.stringify(inventory.entries))
-      return { ok: false, error: "conflict", message: "Sheet or identity metadata changed before reconciliation; retry." };
+    if (!preflight.ok || poiSourceSnapshot_(preflight) !== before)
+      return { ok: false, error: "conflict", stage: "source_preflight", message: "Sheet values, formulas, links or section changed before reconciliation; retry." };
+    if (poiIdentitySnapshot_(strictPoiIdentityInventory_()) !== poiIdentitySnapshot_(inventory))
+      return { ok: false, error: "conflict", stage: "identity_preflight", message: "Identity metadata changed before reconciliation; retry." };
     if (requests.length) {
       wrote = true; // A transport failure may occur after Google accepted the batch.
       Sheets.Spreadsheets.batchUpdate({ requests: requests }, SpreadsheetApp.getActiveSpreadsheet().getId());

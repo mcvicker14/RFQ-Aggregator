@@ -7,8 +7,9 @@ snapshots. A successful slot and its cache replacement commit together under the
 existing PostgreSQL advisory lock. Failures retain the previous cache, do not
 complete the slot, and can retry after five minutes.
 
-The dedicated `/api/status-board/reconciliation-check` endpoint uses the existing
-`SCHEDULED_SYNC_SECRET` and accepts no fields or decisions. It runs no APEX,
+The dedicated `/api/status-board/reconciliation-check` endpoint uses
+`STATUS_BOARD_RECONCILIATION_SECRET` and accepts no fields or decisions. This is a
+dedicated board-only credential, not the intake scheduler credential. It runs no APEX,
 COREWORKS or SAM intake. Their routes, schedules and workflow remain unchanged.
 The existing ten-minute board process job checks due slots when reconciliation
 is enabled; otherwise it retains its former read-only behavior. Existing visible
@@ -18,10 +19,13 @@ browser refreshes and explicit Y/N/blank saves remain unchanged and immediate.
 reviewed POI branch. It calls the deployed POI API, not the legacy main app. Its
 UTC windows cover both Central offsets, then its Python guard admits only the
 four intended local hours. Four checks within each due hour provide retries.
-The database makes repeated checks idempotent. The job uses the existing
-`SCHEDULED_SYNC_API_BASE_URL` and `SCHEDULED_SYNC_SECRET` repository secrets; no
-replacement credential is created. Missing configuration fails before sending a
-request. The repository is public, so standard GitHub-hosted Actions runs do not
+The database makes repeated checks idempotent. The job targets the existing public
+POI API URL and uses repository secret `STATUS_BOARD_RECONCILIATION_SECRET`, matching
+the API environment key of the same name. Inspection found no existing scheduler
+credential. Owner approval and secure entry are required for this new, narrowly
+scoped credential; implementation work alone does not create or activate it.
+Missing configuration fails before sending a request. The repository is public,
+so standard GitHub-hosted Actions runs do not
 introduce a new paid service. Do not configure billing, a new account or scope.
 
 GitHub can delay or drop scheduled runs and Free Render can cold-start. This is
@@ -60,10 +64,13 @@ receive no cached decisions and never reconcile Y/N by last-writer-wins.
 2. Pass synthetic Apps Script contracts, local PostgreSQL tests and migration
    checks. Test DST boundaries, 23-to-26 replacement, stable IDs, retries, locks,
    malformed metadata, row moves and preservation of immediate decision edits.
-3. Through existing authorized settings access, verify **names/presence only** of
-   the scheduler secrets in GitHub and configuration on Render. Confirm the base
-   URL targets `principal-oi-api.onrender.com`. Never print secret values. If an
-   existing required credential is unavailable, stop activation; do not create one.
+3. Obtain explicit approval for one new board-only credential after reporting the
+   existing scheduler credential is absent. The owner securely enters the same value
+   as `STATUS_BOARD_RECONCILIATION_SECRET` in the existing Render API environment
+   and GitHub repository Actions secrets. It authorizes only the dedicated board
+   due-slot check; it cannot authorize intake or Submit edits. Never enter it in
+   chat, source code or logs. Do not create a token, account, OAuth scope or paid
+   service. Keep reconciliation disabled until all publication gates pass.
 4. Publish the reviewed source as a new version of the same existing Apps Script
    deployment, preserving execution identity, audience, URL and existing properties.
    Verify existing Advanced Sheets access suffices without a permission prompt.

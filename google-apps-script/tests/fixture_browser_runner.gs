@@ -133,7 +133,9 @@ function runPoiSyntheticReconciliationAcceptance() {
     });
     before = snapshot();
     var result = post({ action: 'reconcile' });
-    check(result.ok && result.identities_added === 1 && result.rows.length === 3, 'one manual row receives exactly one identity');
+    check(result.ok && result.identities_added === 1 && result.rows.length === 3, 'one manual row receives exactly one identity: ' +
+      JSON.stringify({ ok: result.ok, error: result.error, stage: result.stage, message: result.message,
+        identities_added: result.identities_added, row_count: result.rows && result.rows.length }));
     check(snapshot() === before, 'assignment preserves values formulas links formatting and decisions');
     check(result.rows.every(function (row) { return row.source_record_id && /^[a-f0-9]{64}$/.test(row.source_revision); }), 'all three IDs and revisions available');
     check(result.rows.filter(function (row) { return originalIds[row.rfq_title]; }).every(function (row) {
