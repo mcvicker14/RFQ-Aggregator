@@ -36,6 +36,7 @@ from app.db.session import SessionLocal, engine
 from app.services import status_board_webhook_client
 from app.services.scheduled_sync import run_due_scheduled_syncs
 from app.services.status_board_read_sync import refresh_status_board_cache
+from app.services.status_board_reconciliation import run_due_board_reconciliation
 
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
@@ -74,18 +75,17 @@ def _run_scheduled_sync_tick() -> None:
 
 
 def _run_status_board_cache_tick() -> None:
-    """In-process automatic Status Board refresh — every STATUS_BOARD_CACHE_TICK_
-    MINUTES while this process is awake, same "attempt always, no-op if not
-    configured" shape as _run_scheduled_sync_tick above. No external-scheduler layer
-    for this one (unlike COREWORKS/APEX): a stale cache for the few extra minutes
-    until this process next wakes from idle is low-stakes (the manual Refresh button
-    always catches it up immediately), unlike missing a COREWORKS listing entirely —
-    see app/services/scheduled_sync.py's module docstring for why that one DOES need
-    the extra layer. Does nothing if STATUS_BOARD_WEBHOOK_URL/SECRET aren't set."""
+    """Check board slots every ten minutes while awake. Before activation, retain
+    the original read-only ten-minute refresh. The separate external board-only
+    workflow wakes the service during due windows; this is only its safety net.
+    Does nothing if STATUS_BOARD_WEBHOOK_URL/SECRET aren't set."""
     if not status_board_webhook_client.is_configured():
         return
     db = SessionLocal()
     try:
+        if get_settings().STATUS_BOARD_RECONCILIATION_ENABLED:
+            run_due_board_reconciliation(db)
+            return
         state = refresh_status_board_cache(db)
         if state.last_error:
             logger.warning("Status Board cache tick failed: %s", state.last_error)

@@ -89,3 +89,74 @@ function runPoiSyntheticAcceptance() {
     props.setProperty('POI_SUBMIT_EDITS_ENABLED', 'false');
   }
 }
+
+/** Existing synthetic project ONLY. Exercises the actual Google metadata API. */
+function runPoiSyntheticReconciliationAcceptance() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss || ss.getId() !== '1VrBeOJp9H7J3GJub9y2UzIOeUna53yU4M_MeJALz098')
+    throw new Error('This runner is restricted to the approved synthetic fixture.');
+  var sheet = ss.getSheetByName('Active'), report = [], createdRow = null;
+  function check(value, label) { if (!value) throw new Error('FAIL: ' + label); report.push(label); }
+  function snapshot() {
+    SpreadsheetApp.flush();
+    var range = sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns());
+    return JSON.stringify({ values: range.getValues(), formulas: range.getFormulas(),
+      links: range.getRichTextValues().map(function (row) { return row.map(function (v) { return v ? v.getLinkUrl() : null; }); }),
+      backgrounds: range.getBackgrounds(), formats: range.getNumberFormats(), notes: range.getNotes() });
+  }
+  PropertiesService.getScriptProperties().setProperty('STATUS_BOARD_WEBHOOK_SECRET', 'poi-synthetic-fixture-only');
+  function post(body) {
+    body.secret = 'poi-synthetic-fixture-only';
+    return handlePost({ postData: { contents: JSON.stringify(body) } });
+  }
+  var initial = post({ action: 'read' }), original = snapshot();
+  check(initial.ok && initial.rows.length === 2 && initial.rows.every(function (row) {
+    return /^SYNTHETIC POI RFQ [AB]$/.test(row.rfq_title) && row.source_record_id;
+  }), 'exactly two identified synthetic RFQs');
+  var originalIds = {};
+  initial.rows.forEach(function (row) { originalIds[row.rfq_title] = row.source_record_id; });
+  try {
+    var block = findReadBlock_();
+    if (!block.ok) throw new Error('Fixture section could not be verified.');
+    createdRow = block.headerRow + block.existingRows.length + 1;
+    sheet.insertRowsBefore(createdRow, 1);
+    sheet.getRange(createdRow, 1, 1, 16).setValues([
+      ['', '11/4/2026', '2:00 PM', 'Synthetic manual agency', 'SYNTHETIC POI RFQ C', '', '', 'Y', '', '', '', '', 'Retain manual notes', '', 'https://example.invalid/manual-c', '']
+    ]);
+    sheet.getRange(createdRow, 11).setFormula('=1+1');
+    sheet.getRange(createdRow + ':' + createdRow).addDeveloperMetadata(POI_RECORD_KEY, 'malformed-fixture-only');
+    var before = snapshot(), invalid = post({ action: 'reconcile' });
+    check(invalid.ok === false && invalid.error === 'identity_error', 'malformed metadata fails before assignment');
+    check(snapshot() === before, 'rejection preserves all fixture cells');
+    sheet.createDeveloperMetadataFinder().withKey(POI_RECORD_KEY).find().forEach(function (metadata) {
+      if (metadata.getValue() === 'malformed-fixture-only') metadata.remove();
+    });
+    before = snapshot();
+    var result = post({ action: 'reconcile' });
+    check(result.ok && result.identities_added === 1 && result.rows.length === 3, 'one manual row receives exactly one identity');
+    check(snapshot() === before, 'assignment preserves values formulas links formatting and decisions');
+    check(result.rows.every(function (row) { return row.source_record_id && /^[a-f0-9]{64}$/.test(row.source_revision); }), 'all three IDs and revisions available');
+    check(result.rows.filter(function (row) { return originalIds[row.rfq_title]; }).every(function (row) {
+      return row.source_record_id === originalIds[row.rfq_title];
+    }), 'pre-existing IDs preserved');
+    var manual = result.rows.filter(function (row) { return row.rfq_title === 'SYNTHETIC POI RFQ C'; })[0];
+    check(manual.submit_y_n === 'Y' && manual.link === 'https://example.invalid/manual-c', 'manual decision and link preserved');
+    result = post({ action: 'reconcile' });
+    check(result.ok && result.identities_added === 0, 'second reconciliation is idempotent');
+    check(snapshot() === before, 'idempotent retry changes no cells');
+    check(post({ action: 'reconcile', value: 'N' }).error === 'bad_request', 'cached decisions are forbidden');
+    sheet.moveRows(sheet.getRange(createdRow, 1, 1, sheet.getMaxColumns()), block.headerRow + 1);
+    createdRow = block.headerRow + 1; SpreadsheetApp.flush(); before = snapshot();
+    result = post({ action: 'reconcile' });
+    check(result.ok && result.identities_added === 0, 'row movement needs no duplicate IDs');
+    check(result.rows.filter(function (row) { return row.rfq_title === 'SYNTHETIC POI RFQ C'; })[0].source_record_id === manual.source_record_id, 'manual identity follows row movement');
+    check(snapshot() === before, 'movement reconciliation changes no cells');
+  } finally {
+    // Remove only the extra synthetic test record; production is never referenced.
+    if (createdRow !== null) sheet.deleteRows(createdRow, 1);
+    SpreadsheetApp.flush();
+  }
+  check(snapshot() === original, 'original two-row fixture restored unchanged');
+  Logger.log(JSON.stringify({ ok: true, checks: report, production_writes: 0 }));
+  return { ok: true, checks: report };
+}

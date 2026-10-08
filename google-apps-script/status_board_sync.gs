@@ -110,7 +110,7 @@ function handlePost(e) {
   }
 
   var action = body.action || "write"; // no action given = write, for the existing deployed caller
-  if (action !== "read" && action !== "write" && action !== "set_submit") {
+  if (action !== "read" && action !== "write" && action !== "set_submit" && action !== "reconcile") {
     return { ok: false, error: "bad_request", message: "Unsupported action." };
   }
 
@@ -127,6 +127,11 @@ function handlePost(e) {
   try {
     if (action === "read") {
       return readNewRfqsRows_();
+    }
+    if (action === "reconcile") {
+      if (Object.keys(body).some(function (key) { return key !== "secret" && key !== "action"; }))
+        return { ok: false, error: "bad_request", message: "Reconciliation accepts no row values or decisions." };
+      return reconcileNewRfqsRows_();
     }
     if (action === "set_submit") return setSubmit_(body);
     var fields = body.fields;
@@ -393,30 +398,150 @@ function editConflict_() {
   return { ok: false, error: "conflict", message: "The sheet row changed or is no longer editable. Refresh and review it." };
 }
 
-// OWNER-ONLY, MANUAL SETUP after separate review approval. No webhook action calls
-// this. Adds invisible IDs to CURRENT New RFQs rows, without changing any cells.
-// Run with the sheet closed to other editors; compare a full before/after snapshot.
+// Owner setup and the authenticated scheduled reconciliation share ONE writer.
+// Reads and explicit Submit edits never create metadata or replay decisions.
 function preparePoiSubmitIdentities() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) throw new Error("Another sync is running.");
   try {
-    var block = findReadBlock_();
-    if (!block.ok) throw new Error(block.message);
-    var ids = recordIdentities_(block.sheet);
-    if (Object.keys(ids).some(function (number) { return ids[number] === null; }))
-      throw new Error("Ambiguous existing identity; manual review required before setup.");
-    block.existingRows.forEach(function (_, i) {
-      var number = block.headerRow + 1 + i;
-      if (Object.prototype.hasOwnProperty.call(ids, number)) {
-        if (!ids[number]) throw new Error("Ambiguous existing identity; manual review required.");
-        return;
-      }
-      // Unbounded A1 row notation is required for ROW metadata. A numeric
-      // full-grid-width range is still a bounded rectangle in Apps Script.
-      block.sheet.getRange(number + ":" + number)
-        .addDeveloperMetadata(POI_RECORD_KEY, Utilities.getUuid());
-    });
+    var result = ensurePoiSubmitIdentities_();
+    if (!result.ok) throw new Error(result.message);
+    return result;
   } finally { lock.releaseLock(); }
+}
+
+function reconcileNewRfqsRows_() {
+  var prepared = ensurePoiSubmitIdentities_();
+  if (!prepared.ok) return prepared;
+  var result = readNewRfqsRows_();
+  if (result.ok && result.rows.some(function (row) { return !row.source_record_id || !row.source_revision; }))
+    return { ok: false, error: "conflict", message: "New RFQs changed during reconciliation; retry from the current sheet." };
+  if (result.ok) result.identities_added = prepared.identities_added;
+  return result;
+}
+
+// Strict inventory includes Archive so copied/malformed identities cannot be
+// silently accepted or overwritten. No metadata is deleted, repaired or reused.
+function strictPoiIdentityInventory_() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var searched = Sheets.Spreadsheets.DeveloperMetadata.search({ dataFilters: [
+    { developerMetadataLookup: { metadataKey: POI_RECORD_KEY } }
+  ] }, spreadsheet.getId());
+  var rows = {}, values = {}, ids = {}, entries = [];
+  (searched.matchedDeveloperMetadata || []).forEach(function (match) {
+    var metadata = match.developerMetadata, location = metadata && metadata.location;
+    var range = location && location.dimensionRange;
+    if (!metadata || metadata.metadataKey !== POI_RECORD_KEY ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(metadata.metadataValue || "") ||
+        !range || range.dimension !== "ROWS" || !Number.isInteger(range.sheetId) ||
+        !Number.isInteger(range.startIndex) || range.startIndex < 0 || range.endIndex !== range.startIndex + 1 ||
+        !Number.isInteger(metadata.metadataId) || metadata.metadataId < 0)
+      throw new Error("Malformed POI identity metadata; owner review required.");
+    var key = range.sheetId + ":" + range.startIndex;
+    if (rows[key] || values[metadata.metadataValue] || ids[metadata.metadataId])
+      throw new Error("Ambiguous POI identity metadata; owner review required.");
+    rows[key] = metadata;
+    values[metadata.metadataValue] = true;
+    ids[metadata.metadataId] = true;
+    entries.push(metadata);
+  });
+  entries.sort(function (left, right) { return left.metadataId - right.metadataId; });
+  return { rows: rows, entries: entries };
+}
+
+function poiSourceSnapshot_(block) {
+  var height = block.existingRows.length;
+  return JSON.stringify({ header: block.headerRow, columns: block.columns, values: block.existingRows,
+    formulas: height ? block.sheet.getRange(block.headerRow + 1, 1, height, 16).getFormulas() : [],
+    links: block.links.map(function (row) { return row.map(function (link) { return link && link.getLinkUrl(); }); }) });
+}
+
+// Tentative IDs are not exposed to POI until the whole operation is confirmed.
+// If a human moves/inserts a row during the batch, remove ONLY UUIDs generated
+// by this invocation (known absent from the preflight inventory). Never remove
+// any pre-existing identity, cell, decision or record.
+function discardTentativePoiIdentities_(created) {
+  if (!created.length) return;
+  var values = created.map(function (entry) { return entry.value; });
+  var filters = values.map(function (value) { return { developerMetadataLookup: {
+    metadataKey: POI_RECORD_KEY, metadataValue: value
+  } }; });
+  var spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+  var result = Sheets.Spreadsheets.DeveloperMetadata.search({ dataFilters: filters }, spreadsheetId);
+  var requests = [], seen = {};
+  (result.matchedDeveloperMetadata || []).forEach(function (match) {
+    var metadata = match.developerMetadata;
+    if (!metadata || metadata.metadataKey !== POI_RECORD_KEY || values.indexOf(metadata.metadataValue) < 0 ||
+        !Number.isInteger(metadata.metadataId)) throw new Error("Tentative identity cleanup could not be verified.");
+    if (seen[metadata.metadataId]) return;
+    seen[metadata.metadataId] = true;
+    requests.push({ deleteDeveloperMetadata: { dataFilter: { developerMetadataLookup: {
+      metadataId: metadata.metadataId, metadataKey: POI_RECORD_KEY, metadataValue: metadata.metadataValue
+    } } } });
+  });
+  if (requests.length) Sheets.Spreadsheets.batchUpdate({ requests: requests }, spreadsheetId);
+  if ((Sheets.Spreadsheets.DeveloperMetadata.search({ dataFilters: filters }, spreadsheetId).matchedDeveloperMetadata || []).length)
+    throw new Error("Tentative identity cleanup was not confirmed.");
+}
+
+function ensurePoiSubmitIdentities_() {
+  if (typeof Sheets === "undefined" || !Sheets.Spreadsheets.DeveloperMetadata || !Sheets.Spreadsheets.batchUpdate)
+    return { ok: false, error: "needs_configuration", message: "Existing Advanced Sheets service is required for metadata reconciliation." };
+  var wrote = false, created = [];
+  try {
+    var block = findReadBlock_();
+    if (!block.ok) return block;
+    var before = poiSourceSnapshot_(block), inventory = strictPoiIdentityInventory_();
+    var sheetId = block.sheet.getSheetId(), requests = [];
+    var existingValues = inventory.entries.map(function (metadata) { return metadata.metadataValue; });
+    block.existingRows.forEach(function (_, i) {
+      var index = block.headerRow + i;
+      if (inventory.rows[sheetId + ":" + index]) return;
+      var value = Utilities.getUuid();
+      if (existingValues.indexOf(value) >= 0) throw new Error("Duplicate generated identity; retry without changes.");
+      existingValues.push(value); created.push({ index: index, value: value });
+      requests.push({ createDeveloperMetadata: { developerMetadata: {
+        metadataKey: POI_RECORD_KEY, metadataValue: value, visibility: "DOCUMENT",
+        location: { dimensionRange: { sheetId: sheetId, dimension: "ROWS", startIndex: index, endIndex: index + 1 } }
+      } } });
+    });
+    // ScriptLock excludes competing app writers. It does NOT exclude a human
+    // editing the sheet; revalidate before one atomic metadata-only batch, then
+    // verify afterward. A detected race stops caching, never rewrites cells.
+    var preflight = findReadBlock_();
+    if (!preflight.ok || poiSourceSnapshot_(preflight) !== before ||
+        JSON.stringify(strictPoiIdentityInventory_().entries) !== JSON.stringify(inventory.entries))
+      return { ok: false, error: "conflict", message: "Sheet or identity metadata changed before reconciliation; retry." };
+    if (requests.length) {
+      wrote = true; // A transport failure may occur after Google accepted the batch.
+      Sheets.Spreadsheets.batchUpdate({ requests: requests }, SpreadsheetApp.getActiveSpreadsheet().getId());
+    }
+    SpreadsheetApp.flush();
+    var after = findReadBlock_(), checked = strictPoiIdentityInventory_();
+    if (!after.ok || poiSourceSnapshot_(after) !== before ||
+        inventory.entries.some(function (metadata) {
+          var range = metadata.location.dimensionRange;
+          var actual = checked.rows[range.sheetId + ":" + range.startIndex];
+          return !actual || actual.metadataId !== metadata.metadataId || actual.metadataValue !== metadata.metadataValue;
+        }) || created.some(function (entry) {
+          var actual = checked.rows[sheetId + ":" + entry.index];
+          return !actual || actual.metadataValue !== entry.value;
+        })) {
+      discardTentativePoiIdentities_(created);
+      return { ok: false, error: "conflict", message: "Concurrent sheet change detected; inspect metadata before retrying. No cells were overwritten." };
+    }
+    return { ok: true, identities_added: created.length };
+  } catch (error) {
+    if (wrote) {
+      try {
+        discardTentativePoiIdentities_(created);
+        return { ok: false, error: "conflict", message: "Reconciliation changed concurrently or was interrupted; tentative IDs were discarded. Retry from the current sheet." };
+      } catch (cleanupError) {
+        return { ok: false, error: "uncertain", message: "Tentative metadata cleanup was not confirmed; owner inspection required. No cells were overwritten." };
+      }
+    }
+    return { ok: false, error: "identity_error", message: "Identity validation failed before changes; inspect malformed or ambiguous POI metadata." };
+  }
 }
 
 function isBlankRow(row) {

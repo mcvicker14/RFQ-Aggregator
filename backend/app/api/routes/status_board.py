@@ -1,11 +1,12 @@
-"""Status Board page — read-side routes only. Writing to the sheet (one row per
+"""Status Board cached reads, immediate Submit edits and scheduled reconciliation.
+Writing full rows to the sheet (one row per
 "Track + Add to Status Board" click) happens elsewhere, unchanged — see
 app/services/status_board_sync.py and its routes on opportunities.py/
-intelligence_items.py. This file is entirely new: list the cached board
-(app/services/status_board_read_sync.py's StatusBoardRow cache) with the same named
-filters the Dashboard's Status Board section counts by, and trigger a manual refresh.
+intelligence_items.py. Reconciliation assigns source metadata and replaces the cache;
+it never copies cached decisions back to the sheet.
 """
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response, status
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,8 +19,26 @@ from app.schemas.opportunity import StatusBoardListResponse, StatusBoardRowRead,
 from app.services.status_board_filters import STATUS_BOARD_FILTER_NAMES, apply_status_board_filter
 from app.services.status_board_read_sync import refresh_status_board_cache
 from app.services.status_board_submit import set_board_submit
+from app.services.status_board_reconciliation import run_due_board_reconciliation
+from app.api.routes.scheduled_sync import _require_scheduled_sync_secret
 
 router = APIRouter(prefix="/api/status-board", tags=["status-board"])
+
+
+class BoardReconciliationCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    secret: str | None = None
+
+
+@router.post("/reconciliation-check")
+def check_board_reconciliation(payload: BoardReconciliationCheck, response: Response,
+                               db: Session = Depends(get_db)):
+    """Machine check using the existing scheduler secret; no intake or decisions."""
+    _require_scheduled_sync_secret(payload)
+    result = run_due_board_reconciliation(db)
+    if result["reason"] == "failed":
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return result
 
 _SORT_COLUMNS = {
     "due_date": StatusBoardRow.due_date_parsed,

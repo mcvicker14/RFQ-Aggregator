@@ -178,7 +178,9 @@ def _validate_rows(result: dict) -> list[dict]:
     return result["rows"]
 
 
-def refresh_status_board_cache(db: Session, *, minimum_interval_seconds: int = 0) -> StatusBoardCacheState:
+def refresh_status_board_cache(db: Session, *, minimum_interval_seconds: int = 0,
+                              scheduled_slot: datetime | None = None,
+                              now: datetime | None = None) -> StatusBoardCacheState:
     """Entry point for both the manual "Refresh Status Board" action and the
     automatic poll (see app/api/routes/status_board.py and app/main.py). Always
     returns the current StatusBoardCacheState; check .last_error to see whether THIS
@@ -188,7 +190,18 @@ def refresh_status_board_cache(db: Session, *, minimum_interval_seconds: int = 0
     if not db.execute(text("SELECT pg_try_advisory_xact_lock(710042001)")).scalar():
         return db.execute(select(StatusBoardCacheState)).scalars().first() or StatusBoardCacheState(row_count=0)
     state = _get_or_create_cache_state(db)
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    if scheduled_slot is not None:
+        # Completion, metadata assignment and cache replacement share this lock.
+        # A manual cache refresh must never mark a scheduled metadata slot complete.
+        if state.last_reconciliation_slot_at and state.last_reconciliation_slot_at >= scheduled_slot:
+            db.commit()
+            return state
+        if state.last_reconciliation_attempted_at and \
+                (now - state.last_reconciliation_attempted_at).total_seconds() < 300:
+            db.commit()
+            return state
+        state.last_reconciliation_attempted_at = now
     if minimum_interval_seconds and state.last_sync_attempted_at and \
             (now - state.last_sync_attempted_at).total_seconds() < minimum_interval_seconds:
         db.commit()
@@ -196,9 +209,11 @@ def refresh_status_board_cache(db: Session, *, minimum_interval_seconds: int = 0
     state.last_sync_attempted_at = now
 
     try:
-        result = webhook_client.read_rows()
+        result = webhook_client.reconcile_rows() if scheduled_slot is not None else webhook_client.read_rows()
     except (webhook_client.StatusBoardWebhookNotConfiguredError, webhook_client.StatusBoardWebhookError) as exc:
         state.last_error = str(exc)
+        if scheduled_slot is not None:
+            state.last_reconciliation_error = state.last_error
         db.commit()
         logger.warning("Status Board read-sync failed: %s", exc)
         return state
@@ -207,14 +222,20 @@ def refresh_status_board_cache(db: Session, *, minimum_interval_seconds: int = 0
         state.last_error = "{}: {}".format(
             result.get("error", "error"), result.get("message", "Status Board read reported a failure."),
         )
+        if scheduled_slot is not None:
+            state.last_reconciliation_error = state.last_error
         db.commit()
         logger.warning("Status Board read-sync reported failure: %s", state.last_error)
         return state
 
     try:
         raw_rows = _validate_rows(result)
+        if scheduled_slot is not None and any(not row.get("source_record_id") or not row.get("source_revision") for row in raw_rows):
+            raise ValueError("Reconciliation returned a row without a stable identity and revision.")
     except ValueError as exc:
         state.last_error = str(exc)
+        if scheduled_slot is not None:
+            state.last_reconciliation_error = state.last_error
         db.commit()
         logger.warning("Status Board read-sync malformed response: %s", state.last_error)
         return state
@@ -275,5 +296,8 @@ def refresh_status_board_cache(db: Session, *, minimum_interval_seconds: int = 0
     state.last_sync_succeeded_at = now
     state.last_error = None
     state.row_count = len(new_rows)
+    if scheduled_slot is not None:
+        state.last_reconciliation_slot_at = scheduled_slot
+        state.last_reconciliation_error = None
     db.commit()
     return state

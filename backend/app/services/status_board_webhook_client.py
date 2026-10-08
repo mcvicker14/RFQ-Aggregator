@@ -106,3 +106,8 @@ def read_rows() -> dict:
 
 def set_submit(payload: dict) -> dict:
     return _post({"action": "set_submit", **payload}, retry=False)
+
+
+def reconcile_rows() -> dict:
+    """Assign only missing source metadata, then read. No cached decisions sent."""
+    return _post({"action": "reconcile"})

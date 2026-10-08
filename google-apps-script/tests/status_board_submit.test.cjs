@@ -15,6 +15,7 @@ function fixture({ enabled = true, advanced = true, withGoBys = false } = {}) {
   grid[39] = [...grid[38]]; grid[39][4] = 'Second RFQ';
   const ids = [{ number: 39, value: randomUUID(), id: 101 }, { number: 40, value: randomUUID(), id: 102 }];
   let writes = [], metadataWrites = 0, beforeWrite = () => {}, afterWrite = () => {};
+  let beforeMetadata = () => {}, afterMetadata = () => {}, locked = false;
   const sheet = {
     getMaxRows: () => grid.length, getMaxColumns: () => 29, getSheetId: () => 0,
     createDeveloperMetadataFinder: () => ({ withKey: () => ({ find: () => ids.map(m => ({
@@ -36,7 +37,7 @@ function fixture({ enabled = true, advanced = true, withGoBys = false } = {}) {
   };
   const ctx = {
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'STATUS_BOARD_WEBHOOK_SECRET' ? 'test-secret' : enabled ? 'true' : null }) },
-    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) },
+    LockService: { getScriptLock: () => ({ tryLock: () => !locked, releaseLock: () => {} }) },
     SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: () => sheet, getId: () => 'synthetic-sheet' }), flush: () => {} },
     Utilities: { DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' }, getUuid: randomUUID,
       computeDigest: (_, value) => [...createHash('sha256').update(value).digest()] }
@@ -57,12 +58,42 @@ function fixture({ enabled = true, advanced = true, withGoBys = false } = {}) {
     grid[target.number - 1][7] = values[7]; writes.push({ number: target.number, value: values[7] }); afterWrite();
     return { totalUpdatedCells: 1 };
   } } } };
+  if (advanced) {
+    ctx.Sheets.Spreadsheets.DeveloperMetadata = { search: body => {
+      assert.equal(body.dataFilters[0].developerMetadataLookup.metadataKey, 'POI_RECORD_ID_V1');
+      const matched = ids.filter(m => body.dataFilters.some(f => !f.developerMetadataLookup.metadataValue || f.developerMetadataLookup.metadataValue === m.value));
+      return { matchedDeveloperMetadata: matched.map(m => ({ developerMetadata: {
+        metadataKey: 'POI_RECORD_ID_V1', metadataValue: m.value, metadataId: m.id,
+        location: m.location || { dimensionRange: { sheetId: m.sheetId || 0, dimension: 'ROWS', startIndex: m.number - 1, endIndex: m.number } }
+      } })) };
+    } };
+    ctx.Sheets.Spreadsheets.batchUpdate = body => {
+      if (body.requests.some(r => r.createDeveloperMetadata)) beforeMetadata();
+      for (const request of body.requests) {
+        if (request.deleteDeveloperMetadata) {
+          const lookup = request.deleteDeveloperMetadata.dataFilter.developerMetadataLookup;
+          const index = ids.findIndex(m => m.id === lookup.metadataId && m.value === lookup.metadataValue);
+          if (index >= 0) { assert.ok(ids[index].id > 103 && ids[index].id < 200, 'only tentative IDs may be discarded'); ids.splice(index, 1); }
+          continue;
+        }
+        assert.deepEqual(Object.keys(request), ['createDeveloperMetadata']);
+        const metadata = request.createDeveloperMetadata.developerMetadata;
+        assert.equal(metadata.metadataKey, 'POI_RECORD_ID_V1'); assert.equal(metadata.visibility, 'DOCUMENT');
+        const scope = metadata.location.dimensionRange;
+        assert.equal(scope.dimension, 'ROWS'); assert.equal(scope.sheetId, 0); assert.equal(scope.endIndex, scope.startIndex + 1);
+        metadataWrites++; ids.push({ number: scope.startIndex + 1, value: metadata.metadataValue, id: 103 + metadataWrites });
+      }
+      if (body.requests.some(r => r.createDeveloperMetadata)) afterMetadata(); return {};
+    };
+  }
   vm.createContext(ctx); vm.runInContext(source, ctx);
   function post(payload) { return JSON.parse(JSON.stringify(ctx.handlePost({ postData: { contents: JSON.stringify({ secret: 'test-secret', ...payload }) } }))); }
   const first = post({ action: 'read' }).rows[0];
   const edit = { action: 'set_submit', request_id: randomUUID(), source_record_id: first.source_record_id, expected_revision: first.source_revision, expected_submit: first.submit_y_n, value: 'Y' };
   return { post, edit, grid, ids, formulas, writes, ctx, sheet, metadataWrites: () => metadataWrites,
-    beforeWrite: fn => { beforeWrite = fn; }, afterWrite: fn => { afterWrite = fn; } };
+    beforeWrite: fn => { beforeWrite = fn; }, afterWrite: fn => { afterWrite = fn; },
+    beforeMetadata: fn => { beforeMetadata = fn; }, afterMetadata: fn => { afterMetadata = fn; },
+    locked: value => { locked = value; } };
 }
 
 for (const withGoBys of [false, true]) test(`only H changes with known schema ${withGoBys ? 16 : 15}`, () => {
@@ -144,4 +175,70 @@ test('numeric full-width grid range is not an unbounded entire-row metadata loca
   const f = fixture();
   assert.throws(() => f.sheet.getRange(39, 1, 1, 29).addDeveloperMetadata('test', randomUUID()), /arbitrary ranges/);
   assert.equal(f.metadataWrites(), 0);
+});
+
+test('scheduled reconciliation includes new manual rows, preserves existing IDs/cells/formulas and is idempotent', () => {
+  const f = fixture(); f.ids.splice(1, 1);
+  f.grid[39][0] = ''; f.grid[39][7] = 'Y'; f.formulas[39][10] = '=1';
+  const grid = structuredClone(f.grid), formulas = structuredClone(f.formulas), original = structuredClone(f.ids[0]);
+  let result = f.post({ action: 'reconcile' });
+  assert.equal(result.ok, true); assert.equal(result.rows.length, 2); assert.equal(result.identities_added, 1);
+  assert.match(result.rows[1].source_record_id, /^[a-f0-9-]{36}$/); assert.match(result.rows[1].source_revision, /^[a-f0-9]{64}$/);
+  assert.equal(result.rows[1].submit_y_n, 'Y'); assert.deepEqual(f.ids[0], original);
+  assert.deepEqual(f.grid, grid); assert.deepEqual(f.formulas, formulas); assert.equal(f.writes.length, 0);
+  result = f.post({ action: 'reconcile' }); assert.equal(result.identities_added, 0); assert.equal(f.metadataWrites(), 1);
+});
+
+test('one metadata-only batch fills 26 source rows including four manually inserted records', () => {
+  const f = fixture();
+  for (let i = 2; i < 26; i++) { f.grid[38 + i] = [...f.grid[38]]; f.grid[38 + i][4] = `RFQ ${i}`; }
+  for (let i = 2; i < 22; i++) f.ids.push({ number: 39 + i, value: randomUUID(), id: 200 + i });
+  ['Port Arthur P26-061', 'Athens RFQ27-6501', 'Oconaluftee 12441926Q0040', 'Calcasieu'].forEach((title, i) => { f.grid[60 + i][4] = title; });
+  const before = structuredClone(f.grid), result = f.post({ action: 'reconcile' });
+  assert.equal(result.ok, true); assert.equal(result.rows.length, 26); assert.equal(result.identities_added, 4);
+  assert.equal(new Set(result.rows.map(r => r.source_record_id)).size, 26); assert.deepEqual(f.grid, before);
+});
+
+for (const corrupt of ['malformed', 'duplicateValue', 'duplicateRow', 'columnLocation', 'archiveDuplicate'])
+test(`reconciliation rejects ${corrupt} identity metadata before any assignment`, () => {
+  const f = fixture();
+  if (corrupt === 'malformed') f.ids[0].value = 'not-an-id';
+  if (corrupt === 'duplicateValue') f.ids[1].value = f.ids[0].value;
+  if (corrupt === 'duplicateRow') f.ids[1].number = f.ids[0].number;
+  if (corrupt === 'columnLocation') f.ids[0].location = { dimensionRange: { sheetId: 0, dimension: 'COLUMNS', startIndex: 0, endIndex: 1 } };
+  if (corrupt === 'archiveDuplicate') f.ids.push({ ...f.ids[0], id: 999, sheetId: 99 });
+  f.grid[40] = [...f.grid[39]]; const before = structuredClone(f.grid);
+  assert.equal(f.post({ action: 'reconcile' }).error, 'identity_error'); assert.equal(f.metadataWrites(), 0); assert.deepEqual(f.grid, before);
+});
+
+test('row movement before reconciliation preserves the identity on the moved record', () => {
+  const f = fixture(); [f.grid[38], f.grid[39]] = [f.grid[39], f.grid[38]]; f.ids[0].number = 40; f.ids[1].number = 39;
+  const result = f.post({ action: 'reconcile' }); assert.equal(result.ok, true); assert.equal(result.identities_added, 0);
+  assert.equal(result.rows.find(r => r.rfq_title === 'Synthetic RFQ').source_record_id, f.edit.source_record_id);
+});
+
+test('concurrent human cell change is retained and blocks cache acceptance; retry is idempotent', () => {
+  const f = fixture(); f.ids.splice(1, 1); f.beforeMetadata(() => { f.grid[39][7] = 'Y'; f.grid[39][12] = 'Human notes'; });
+  assert.equal(f.post({ action: 'reconcile' }).error, 'conflict'); assert.equal(f.grid[39][7], 'Y'); assert.equal(f.grid[39][12], 'Human notes');
+  f.beforeMetadata(() => {}); const result = f.post({ action: 'reconcile' });
+  assert.equal(result.ok, true); assert.equal(result.identities_added, 1); assert.equal(result.rows[1].submit_y_n, 'Y'); assert.equal(f.metadataWrites(), 2);
+});
+
+test('structural move discards only tentative metadata; retry preserves the moved original ID and decisions', () => {
+  const f = fixture(); f.ids.splice(1, 1);
+  f.beforeMetadata(() => { [f.grid[38], f.grid[39]] = [f.grid[39], f.grid[38]]; f.ids[0].number = 40; });
+  assert.equal(f.post({ action: 'reconcile' }).error, 'conflict'); assert.equal(f.grid[38][7], 'N'); assert.equal(f.grid[39][7], 'N');
+  assert.equal(f.ids.length, 1); assert.equal(f.ids[0].value, f.edit.source_record_id);
+  f.beforeMetadata(() => {}); const result = f.post({ action: 'reconcile' });
+  assert.equal(result.ok, true); assert.equal(result.identities_added, 1); assert.equal(new Set(f.ids.map(m => m.value)).size, 2);
+});
+
+test('reconciliation never accepts cached fields or Submit decisions', () => {
+  const f = fixture(); assert.equal(f.post({ action: 'reconcile', value: 'N' }).error, 'bad_request');
+  assert.equal(f.post({ action: 'reconcile', fields: { submit_y_n: 'Y' } }).error, 'bad_request'); assert.equal(f.metadataWrites(), 0);
+});
+
+test('shared Script lock and missing Advanced Sheets service fail without writes', () => {
+  const f = fixture(); f.locked(true); assert.equal(f.post({ action: 'reconcile' }).error, 'locked'); assert.equal(f.metadataWrites(), 0);
+  const missing = fixture({ advanced: false }); assert.equal(missing.post({ action: 'reconcile' }).error, 'needs_configuration');
 });

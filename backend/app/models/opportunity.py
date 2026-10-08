@@ -199,3 +199,6 @@ class StatusBoardCacheState(UUIDPKMixin, TimestampMixin, Base):
     last_sync_succeeded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
     row_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_reconciliation_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_reconciliation_slot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_reconciliation_error: Mapped[str | None] = mapped_column(Text, default=None)
