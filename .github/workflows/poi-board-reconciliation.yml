@@ -1,0 +1,54 @@
+name: POI board reconciliation
+
+# Install this same file on the default branch: schedule events do not run from
+# the deployed feature branch. No application code is merged into legacy main.
+on:
+  schedule:
+    # Both Central offsets. The step below admits ONLY 09/12/16/20 Central.
+    # Four checks in each due hour provide retries without round-the-clock wakes.
+    - cron: "0,15,30,45 1,2,14,15,17,18,21,22 * * *"
+  workflow_dispatch: {}
+
+permissions: {}
+concurrency:
+  group: poi-board-reconciliation
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check Central-time window
+        id: window
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          local = datetime.now(ZoneInfo("America/Chicago"))
+          due = local.hour in (9, 12, 16, 20) or os.environ["EVENT_NAME"] == "workflow_dispatch"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"due={'true' if due else 'false'}\n")
+          PY
+      - name: Reconcile the board only
+        if: steps.window.outputs.due == 'true'
+        env:
+          API_BASE_URL: https://principal-oi-api.onrender.com
+          BOARD_RECONCILIATION_SECRET: ${{ secrets.STATUS_BOARD_RECONCILIATION_SECRET }}
+        run: |
+          if [ -z "$BOARD_RECONCILIATION_SECRET" ]; then
+            echo "Approved board scheduler credential is unavailable; no request sent."
+            exit 1
+          fi
+          # Stream the credential from env to stdin; never print it or put it in
+          # a command argument. Retries are safe because completion is DB-locked.
+          python3 - <<'PY' | curl -sS -X POST "${API_BASE_URL%/}/api/status-board/reconciliation-check" \
+            -H "Content-Type: application/json" --data-binary @- \
+            --connect-timeout 30 --max-time 180 --retry 2 --retry-delay 15 \
+            --retry-all-errors --fail-with-body
+          import json, os
+          print(json.dumps({"secret": os.environ["BOARD_RECONCILIATION_SECRET"]}))
+          PY
