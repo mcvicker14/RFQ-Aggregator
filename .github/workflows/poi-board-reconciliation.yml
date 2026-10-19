@@ -43,12 +43,47 @@ jobs:
             echo "Approved board scheduler credential is unavailable; no request sent."
             exit 1
           fi
-          # Stream the credential from env to stdin; never print it or put it in
-          # a command argument. Retries are safe because completion is DB-locked.
-          python3 - <<'PY' | curl -sS -X POST "${API_BASE_URL%/}/api/status-board/reconciliation-check" \
-            -H "Content-Type: application/json" --data-binary @- \
-            --connect-timeout 30 --max-time 180 --retry 2 --retry-delay 15 \
-            --retry-all-errors --fail-with-body
-          import json, os
-          print(json.dumps({"secret": os.environ["BOARD_RECONCILIATION_SECRET"]}))
+          # One request per check. A retry-wait response must never hide a failure.
+          # The next existing scheduled check retries after the server backoff.
+          python3 - <<'PY'
+          # BEGIN VERIFIED BOARD CHECK
+          import json, os, sys
+          from datetime import datetime, time, timedelta, timezone
+          from zoneinfo import ZoneInfo
+          from urllib.request import Request, urlopen
+
+          def check_board():
+              secret = os.environ.get("BOARD_RECONCILIATION_SECRET")
+              if not secret:
+                  raise ValueError("Board credential unavailable")
+              base = os.environ["API_BASE_URL"].rstrip("/")
+              if base != "https://principal-oi-api.onrender.com":
+                  raise ValueError("Unexpected board endpoint")
+              central = ZoneInfo("America/Chicago")
+              now = datetime.now(timezone.utc).astimezone(central)
+              due = [hour for hour in (9, 12, 16, 20) if hour <= now.hour]
+              day = now.date() if due else now.date() - timedelta(days=1)
+              expected = datetime.combine(day, time(due[-1] if due else 20), central)
+              request = Request(base + "/api/status-board/reconciliation-check",
+                                data=json.dumps({"secret": secret}).encode(),
+                                headers={"Content-Type": "application/json"}, method="POST")
+              with urlopen(request, timeout=180) as response:
+                  if response.status != 200:
+                      raise ValueError("Board HTTP status did not confirm completion")
+                  result = json.load(response)
+              if not isinstance(result, dict) or result.get("reason") != "completed" or result.get("last_error") is not None:
+                  raise ValueError("Board did not confirm a completed error-free slot")
+              slot = datetime.fromisoformat(result["slot_at"].replace("Z", "+00:00"))
+              if slot.tzinfo is None or slot < expected or slot > datetime.now(timezone.utc):
+                  raise ValueError("Board completion is stale or has no timezone")
+              print("Board reconciliation confirmed", slot.isoformat())
+
+          if __name__ == "__main__":
+              try:
+                  check_board()
+              except Exception:
+                  # Never echo request/credential or an untrusted response body.
+                  print("Board reconciliation unconfirmed; inspect application state. No success recorded.", file=sys.stderr)
+                  sys.exit(1)
+          # END VERIFIED BOARD CHECK
           PY

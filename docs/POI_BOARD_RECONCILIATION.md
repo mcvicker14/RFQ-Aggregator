@@ -96,3 +96,27 @@ GitHub schedule behavior:
 https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule
 Google batch atomicity and concurrent collaboration caveat:
 https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate
+# October 19 identity compatibility repair
+
+Advanced Sheets metadata search can omit `dimensionRange.sheetId` for sheet zero.
+The strict inventory now resolves only an absent field through the exact native
+DeveloperMetadata ID, corroborating its key, UUID and single-row range before
+using the native sheet ID. Explicit invalid values, mismatches, duplicate IDs,
+duplicate values and ambiguous row assignments still fail closed. The response
+is normalized in memory; existing metadata is never rewritten for this case.
+
+The scheduled workflow sends one request per check and requires HTTP 200,
+`reason=completed`, no error and a timezone-aware slot at least as recent as the
+latest due Central-time slot. Failed, disabled, busy, malformed and stale results
+fail the job. A curl retry can no longer hide a first failure behind a later
+retry-wait HTTP 200. The existing later scheduled checks provide retry/backoff.
+
+Local validation: `node --test google-apps-script/tests/status_board_submit.test.cjs`
+(57 tests), and `python google-apps-script/tests/test_board_workflow.py` (6 tests).
+The existing Google synthetic fixture passed all 15 reconciliation checks and
+25 Submit checks on October 19, 2026 at 16:01:49 and 16:04:13 UTC respectively.
+Production backfill/deployment evidence is retained in the existing canonical
+software status Page, not in a second tracker. Preserve the prior deployment as
+the rollback target; disable the existing reconciliation flag/workflow first if
+verification fails. Never undo successful identity assignments merely to roll
+back code, and never replay cached decisions into the Sheet.

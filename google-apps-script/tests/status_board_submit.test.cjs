@@ -38,7 +38,12 @@ function fixture({ enabled = true, advanced = true, withGoBys = false } = {}) {
   const ctx = {
     PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'STATUS_BOARD_WEBHOOK_SECRET' ? 'test-secret' : enabled ? 'true' : null }) },
     LockService: { getScriptLock: () => ({ tryLock: () => !locked, releaseLock: () => {} }) },
-    SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: () => sheet, getId: () => 'synthetic-sheet' }), flush: () => {} },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: () => sheet, getId: () => 'synthetic-sheet',
+      createDeveloperMetadataFinder: () => ({ withKey: () => ({ find: () => ids.map(m => ({
+        getId: () => m.id, getKey: () => 'POI_RECORD_ID_V1', getValue: () => m.value,
+        getLocation: () => ({ getRow: () => ({ getRow: () => m.number, getNumRows: () => 1,
+          getSheet: () => ({ getSheetId: () => m.sheetId ?? 0 }) }) })
+      })) }) }) }), flush: () => {} },
     Utilities: { DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' }, getUuid: randomUUID,
       computeDigest: (_, value) => [...createHash('sha256').update(value).digest()] }
   };
@@ -266,4 +271,68 @@ test('actual metadata value change between inventory and preflight still conflic
   };
   const result = f.post({ action: 'reconcile' });
   assert.equal(result.error, 'conflict'); assert.equal(result.stage, 'identity_preflight'); assert.equal(f.metadataWrites(), 0);
+});
+
+function omitZeroSheetIds(f) {
+  const search = f.ctx.Sheets.Spreadsheets.DeveloperMetadata.search;
+  f.ctx.Sheets.Spreadsheets.DeveloperMetadata.search = body => {
+    const result = search(body);
+    for (const match of result.matchedDeveloperMetadata) {
+      const range = match.developerMetadata.location.dimensionRange;
+      if (range.sheetId === 0) delete range.sheetId;
+    }
+    return result;
+  };
+}
+
+test('actual omitted-zero serialization resolves by native ID, preserves Archive and fills only missing rows idempotently', () => {
+  const f = fixture(); f.ids.splice(1, 1);
+  f.ids.push({ number: 195, value: randomUUID(), id: 900, sheetId: 1510343396 });
+  omitZeroSheetIds(f);
+  const old = structuredClone(f.ids), cells = structuredClone(f.grid);
+  const result = f.post({ action: 'reconcile' });
+  assert.equal(result.ok, true); assert.equal(result.identities_added, 1);
+  assert.deepEqual(f.ids.slice(0, 2), old); assert.deepEqual(f.grid, cells);
+  assert.equal(f.post({ action: 'reconcile' }).identities_added, 0);
+  const inventory = f.ctx.strictPoiIdentityInventory_();
+  assert.equal(inventory.rows['0:38'].metadataId, 101);
+  assert.equal(inventory.rows['1510343396:194'].metadataId, 900);
+});
+
+for (const defect of ['missingNative', 'wrongValue', 'wrongKey', 'movedRow', 'multiRow', 'negativeSheet', 'duplicateNativeId']) {
+  test(`omitted sheet ID with ${defect} fails closed before any write`, () => {
+    const f = fixture(); f.ids.splice(1, 1); omitZeroSheetIds(f);
+    const get = f.ctx.SpreadsheetApp.getActiveSpreadsheet;
+    f.ctx.SpreadsheetApp.getActiveSpreadsheet = () => {
+      const ss = get(), finder = ss.createDeveloperMetadataFinder;
+      ss.createDeveloperMetadataFinder = () => ({ withKey: () => ({ find: () => {
+        const entries = finder().withKey().find();
+        if (defect === 'missingNative') return [];
+        if (defect === 'duplicateNativeId') return [...entries, entries[0]];
+        const m = entries[0];
+        if (defect === 'wrongValue') m.getValue = () => randomUUID();
+        if (defect === 'wrongKey') m.getKey = () => 'OTHER_KEY';
+        const row = m.getLocation().getRow();
+        if (defect === 'movedRow') row.getRow = () => 40;
+        if (defect === 'multiRow') row.getNumRows = () => 2;
+        if (defect === 'negativeSheet') row.getSheet = () => ({ getSheetId: () => -1 });
+        m.getLocation = () => ({ getRow: () => row });
+        return entries;
+      } }) });
+      return ss;
+    };
+    assert.equal(f.post({ action: 'reconcile' }).error, 'identity_error');
+    assert.equal(f.metadataWrites(), 0);
+  });
+}
+
+for (const sheetId of [null, '0', -1, 0.5]) test(`explicit invalid sheetId ${JSON.stringify(sheetId)} is never normalized`, () => {
+  const f = fixture(); f.ids.splice(1, 1);
+  f.ids[0].location = { dimensionRange: { sheetId, dimension: 'ROWS', startIndex: 38, endIndex: 39 } };
+  assert.equal(f.post({ action: 'reconcile' }).error, 'identity_error'); assert.equal(f.metadataWrites(), 0);
+});
+
+test('omitted sheetId still rejects cross-sheet duplicate UUIDs', () => {
+  const f = fixture(); f.ids.push({ ...f.ids[0], id: 999, sheetId: 1510343396 }); omitZeroSheetIds(f);
+  assert.equal(f.post({ action: 'reconcile' }).error, 'identity_error'); assert.equal(f.metadataWrites(), 0);
 });

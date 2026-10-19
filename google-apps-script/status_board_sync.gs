@@ -427,13 +427,38 @@ function strictPoiIdentityInventory_() {
   var searched = Sheets.Spreadsheets.DeveloperMetadata.search({ dataFilters: [
     { developerMetadataLookup: { metadataKey: POI_RECORD_KEY } }
   ] }, spreadsheet.getId());
-  var rows = {}, values = {}, ids = {}, entries = [];
+  var rows = {}, values = {}, ids = {}, entries = [], nativeById = null;
   (searched.matchedDeveloperMetadata || []).forEach(function (match) {
     var metadata = match.developerMetadata, location = metadata && metadata.location;
     var range = location && location.dimensionRange;
+    // Advanced Sheets can omit sheetId for sheet zero. Never guess the sheet:
+    // resolve this exact metadata ID through the independent native location,
+    // corroborating key, UUID and the complete single-row span before use.
+    if (range && !Object.prototype.hasOwnProperty.call(range, "sheetId")) {
+      if (nativeById === null) {
+        nativeById = {};
+        spreadsheet.createDeveloperMetadataFinder().withKey(POI_RECORD_KEY).find().forEach(function (native) {
+          var id = native.getId();
+          if (Object.prototype.hasOwnProperty.call(nativeById, id))
+            throw new Error("Ambiguous native POI metadata ID; owner review required.");
+          nativeById[id] = native;
+        });
+      }
+      var native = nativeById[metadata.metadataId];
+      var nativeRow = native && native.getLocation().getRow();
+      if (!nativeRow || native.getKey() !== metadata.metadataKey || native.getValue() !== metadata.metadataValue ||
+          nativeRow.getNumRows() !== 1 || nativeRow.getRow() - 1 !== range.startIndex ||
+          nativeRow.getRow() !== range.endIndex)
+        throw new Error("POI metadata location could not be corroborated; owner review required.");
+      // Normalize a copy so inventory keys, snapshots and preservation checks
+      // all use the same verified location without modifying source metadata.
+      metadata = JSON.parse(JSON.stringify(metadata));
+      range = metadata.location.dimensionRange;
+      range.sheetId = nativeRow.getSheet().getSheetId();
+    }
     if (!metadata || metadata.metadataKey !== POI_RECORD_KEY ||
         !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(metadata.metadataValue || "") ||
-        !range || range.dimension !== "ROWS" || !Number.isInteger(range.sheetId) ||
+        !range || range.dimension !== "ROWS" || !Number.isInteger(range.sheetId) || range.sheetId < 0 ||
         !Number.isInteger(range.startIndex) || range.startIndex < 0 || range.endIndex !== range.startIndex + 1 ||
         !Number.isInteger(metadata.metadataId) || metadata.metadataId < 0)
       throw new Error("Malformed POI identity metadata; owner review required.");
